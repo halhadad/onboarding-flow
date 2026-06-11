@@ -79,6 +79,12 @@ templates/resume.html
 templates/review.html
 templates/start.html
 templates/step.html
+tests/conftest.py
+tests/test_decisioning.py
+tests/test_flow_registry.py
+tests/test_onboarding_service.py
+tests/test_repository_redaction.py
+tests/test_validation.py
 web/dependencies.py
 web/forms.py
 web/middleware.py
@@ -87,6 +93,230 @@ web/views.py
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="tests/conftest.py">
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+</file>
+
+<file path="tests/test_decisioning.py">
+from domain.decisioning import AutomatedDecisionEngine
+from domain.states import ApplicationStatus
+
+
+def test_financial_risk_rejects_negative_disposable_income():
+    assert AutomatedDecisionEngine.evaluate_financial_risk(1000, 1200, 0) == ApplicationStatus.REJECTED
+
+
+def test_financial_risk_refers_high_debt_to_manual_review():
+    assert AutomatedDecisionEngine.evaluate_financial_risk(1000, 200, 700) == ApplicationStatus.MANUAL_REVIEW
+
+
+def test_compliance_risk_refers_pep_to_manual_review():
+    assert AutomatedDecisionEngine.evaluate_compliance_risk("SE", True) == ApplicationStatus.MANUAL_REVIEW
+</file>
+
+<file path="tests/test_flow_registry.py">
+import pytest
+
+from domain.flow_registry import flow_registry
+
+
+@pytest.mark.parametrize(
+    ("country", "account_type"),
+    [
+        ("SWEDEN", "private"),
+        ("SWEDEN", "business"),
+        ("SPAIN", "private"),
+        ("SPAIN", "business"),
+        ("POLAND", "private"),
+        ("POLAND", "business"),
+    ],
+)
+def test_all_required_flows_are_registered(country, account_type):
+    flow = flow_registry.get_flow(country, account_type)
+
+    assert flow.country == country
+    assert flow.account_type == account_type
+    assert len(flow.steps) >= 4
+</file>
+
+<file path="tests/test_onboarding_service.py">
+from typing import Any, Dict, Optional
+
+from integrations.credit import MockCreditBureauService
+from integrations.identity import MockIdentityVerificationService
+from integrations.sanctions import MockSanctionsCheckService
+import pytest
+
+from services.onboarding_service import OnboardingService, StateTransitionError
+
+
+class InMemoryRepository:
+    def __init__(self):
+        self.status = {"app-1": "STARTED"}
+        self.responses = {}
+        self.integration_logs = []
+        self.version = 1
+
+    def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> None:
+        self.status[application_id] = "STARTED"
+
+    def get_application_status(self, application_id: str) -> Optional[str]:
+        return self.status.get(application_id)
+
+    def update_application_status(self, application_id: str, status: str, current_version: int) -> None:
+        self.status[application_id] = status
+        self.version += 1
+
+    def save_step_response(self, application_id: str, step_id: str, form_data: Dict[str, Any], payload_hash: str) -> None:
+        self.responses[(application_id, step_id)] = {"form_data": form_data, "payload_hash": payload_hash}
+
+    def get_step_response(self, application_id: str, step_id: str) -> Optional[Dict[str, Any]]:
+        return self.responses.get((application_id, step_id))
+
+    def log_integration_check(self, application_id: str, service_name: str, status_outcome: str, response_json: str, request_id: str) -> None:
+        self.integration_logs.append((service_name, status_outcome))
+
+
+def test_business_profile_runs_bank_account_after_approved_business_credit():
+    repository = InMemoryRepository()
+    repository.responses[("app-1", "business_identity")] = {"form_data": {}, "payload_hash": "h1"}
+    repository.responses[("app-1", "representative")] = {"form_data": {}, "payload_hash": "h2"}
+    repository.responses[("app-1", "beneficial_owners")] = {"form_data": {}, "payload_hash": "h3"}
+    service = OnboardingService(
+        repository=repository,
+        identity_service=MockIdentityVerificationService(),
+        sanctions_service=MockSanctionsCheckService(),
+        credit_service=MockCreditBureauService(),
+    )
+
+    result = service.process_step_submission(
+        application_id="app-1",
+        country="SPAIN",
+        account_type="business",
+        step_id="business_profile",
+        form_data={
+            "sector": "RETAIL",
+            "annual_turnover": 100000.0,
+            "expected_monthly_volume": 2000.0,
+            "iban": "ES9121000418450200059999",
+        },
+        current_version=1,
+        request_id="req-1",
+    )
+
+    assert result == {"status": "MANUAL_REVIEW", "next_step_id": None}
+    assert ("business_credit", "APPROVED") in repository.integration_logs
+    assert ("bank_account", "MANUAL_REVIEW") in repository.integration_logs
+
+
+def test_service_rejects_step_skipping():
+    repository = InMemoryRepository()
+    service = OnboardingService(
+        repository=repository,
+        identity_service=MockIdentityVerificationService(),
+        sanctions_service=MockSanctionsCheckService(),
+        credit_service=MockCreditBureauService(),
+    )
+
+    with pytest.raises(StateTransitionError, match="cannot be submitted"):
+        service.process_step_submission(
+            application_id="app-1",
+            country="SWEDEN",
+            account_type="private",
+            step_id="financial_profile",
+            form_data={
+                "monthly_income": 5000.0,
+                "monthly_expenses": 1000.0,
+                "outstanding_debts": 0.0,
+            },
+            current_version=1,
+            request_id="req-1",
+        )
+</file>
+
+<file path="tests/test_repository_redaction.py">
+import json
+
+from repositories.application_repo import SQLAlchemyApplicationRepository
+
+
+def test_step_response_redacts_direct_identifiers():
+    repository = SQLAlchemyApplicationRepository(session=None)
+
+    redacted = repository._redact_form_data(
+        {
+            "personal_identity_number": "199001011234",
+            "address": "Main Street 12",
+            "phone_number": "+46701234567",
+            "monthly_income": 5000,
+        }
+    )
+
+    assert redacted["personal_identity_number"] == "***1234"
+    assert redacted["address"] == "***t 12"
+    assert redacted["phone_number"] == "***4567"
+    assert redacted["monthly_income"] == 5000
+
+
+def test_integration_payload_redacts_sensitive_fields():
+    repository = SQLAlchemyApplicationRepository(session=None)
+
+    payload = repository._redact_integration_payload(
+        json.dumps(
+            {
+                "income": 5000,
+                "expenses": 2000,
+                "tax_residency": "SE",
+                "outcome": "APPROVED",
+            }
+        )
+    )
+
+    assert json.loads(payload) == {
+        "expenses": "***",
+        "income": "***",
+        "outcome": "APPROVED",
+        "tax_residency": "***",
+    }
+</file>
+
+<file path="tests/test_validation.py">
+import pytest
+
+from domain.flow_registry import flow_registry
+from web.forms import FormValidationError, validate_step_payload
+
+
+def test_sweden_identity_rejects_keyboard_smash():
+    step = flow_registry.get_flow("SWEDEN", "private").get_step_by_id("collect_identity")
+
+    with pytest.raises(FormValidationError, match="Swedish personal identity number"):
+        validate_step_payload(step, "SWEDEN", {"personal_identity_number": "asdfasdf"})
+
+
+def test_contact_rejects_non_numeric_phone_and_address_without_number():
+    step = flow_registry.get_flow("SWEDEN", "private").get_step_by_id("confirm_contact")
+
+    with pytest.raises(FormValidationError, match="Address"):
+        validate_step_payload(step, "SWEDEN", {"address": "asdfasdf", "phone_number": "asdfasdf"})
+
+    with pytest.raises(FormValidationError, match="Phone"):
+        validate_step_payload(step, "SWEDEN", {"address": "Main Street 12", "phone_number": "asdfasdf"})
+
+
+def test_select_fields_reject_unknown_tax_residency():
+    step = flow_registry.get_flow("SPAIN", "private").get_step_by_id("regulatory_declarations")
+
+    with pytest.raises(FormValidationError, match="Tax Residency"):
+        validate_step_payload(step, "SPAIN", {"is_pep": "false", "tax_residency": "banana"})
+</file>
 
 <file path=".gitignore">
 .venv/
@@ -121,6 +351,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     DATABASE_URL: str
+    ONBOARDING_INTERNAL_SECRET: str
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -294,6 +525,11 @@ class ApplicationEntity:
 from typing import Dict, Tuple
 from domain.flow import FlowConfig
 from flows.sweden_individual import sweden_individual_flow
+from flows.sweden_business import sweden_business_flow
+from flows.spain_individual import spain_individual_flow
+from flows.spain_business import spain_business_flow
+from flows.poland_individual import poland_individual_flow
+from flows.poland_business import poland_business_flow
 
 class FlowRegistryError(Exception):
     pass
@@ -317,8 +553,13 @@ class FlowRegistry:
 # Instantiated global lookup registry
 flow_registry = FlowRegistry()
 
-# Statically register the Swedish private journey
+# Statically register the supported onboarding journeys.
 flow_registry.register(sweden_individual_flow)
+flow_registry.register(sweden_business_flow)
+flow_registry.register(spain_individual_flow)
+flow_registry.register(spain_business_flow)
+flow_registry.register(poland_individual_flow)
+flow_registry.register(poland_business_flow)
 </file>
 
 <file path="domain/flow.py">
@@ -447,23 +688,276 @@ class PayloadSignature:
 </file>
 
 <file path="flows/poland_business.py">
+from domain.flow import FlowConfig, FlowStep, FormFieldConfig
 
+
+poland_business_flow = FlowConfig(
+    country="POLAND",
+    account_type="business",
+    steps=[
+        FlowStep(
+            step_id="business_identity",
+            title="NIP / REGON / KRS Details",
+            description="Enter company identifier, legal name and legal form.",
+            fields=[
+                FormFieldConfig("company_identifier", "text", True),
+                FormFieldConfig("legal_name", "text", True),
+                FormFieldConfig("legal_form", "select", True, ["Sp. z o.o.", "SA", "CEIDG"]),
+            ],
+            required_integrations=["registry"],
+        ),
+        FlowStep(
+            step_id="representative",
+            title="Authority to Act",
+            description="Confirm board member or sole proprietor authority.",
+            fields=[
+                FormFieldConfig("representative_name", "text", True),
+                FormFieldConfig("representative_id", "text", True),
+                FormFieldConfig("has_signatory_authority", "boolean", True),
+            ],
+            required_integrations=["representative"],
+        ),
+        FlowStep(
+            step_id="beneficial_owners",
+            title="Beneficial Owners",
+            description="Capture beneficial ownership and risk indicators.",
+            fields=[
+                FormFieldConfig("ubo_count", "number", True),
+                FormFieldConfig("largest_ownership_percent", "number", True),
+            ],
+            required_integrations=["ubo_kyc", "sanctions"],
+        ),
+        FlowStep(
+            step_id="business_profile",
+            title="Business Credit and Account",
+            description="Provide VAT/tax flags, business activity and expected usage.",
+            fields=[
+                FormFieldConfig("sector", "select", True, ["retail", "services", "manufacturing", "financial_services"]),
+                FormFieldConfig("annual_turnover", "number", True),
+                FormFieldConfig("expected_monthly_volume", "number", True),
+                FormFieldConfig("iban", "text", True),
+            ],
+            required_integrations=["business_credit", "bank_account"],
+        ),
+    ],
+)
 </file>
 
 <file path="flows/poland_individual.py">
+from domain.flow import FlowConfig, FlowStep, FormFieldConfig
 
+
+poland_individual_flow = FlowConfig(
+    country="POLAND",
+    account_type="private",
+    steps=[
+        FlowStep(
+            step_id="collect_identity",
+            title="PESEL Verification",
+            description="Enter your PESEL so we can run an eID-style identity mock.",
+            fields=[
+                FormFieldConfig("personal_identity_number", "text", True),
+            ],
+            required_integrations=["identity"],
+        ),
+        FlowStep(
+            step_id="confirm_contact",
+            title="Contact and Registered Address",
+            description="Confirm your phone number and registered address.",
+            fields=[
+                FormFieldConfig("address", "text", True),
+                FormFieldConfig("phone_number", "text", True),
+            ],
+            required_integrations=["address_lookup"],
+        ),
+        FlowStep(
+            step_id="regulatory_declarations",
+            title="Regulatory Declarations",
+            description="Confirm PEP status, sanctions declaration and tax residency.",
+            fields=[
+                FormFieldConfig("is_pep", "boolean", True),
+                FormFieldConfig("tax_residency", "select", True, ["PL", "SE", "ES"]),
+            ],
+            required_integrations=["sanctions"],
+        ),
+        FlowStep(
+            step_id="financial_profile",
+            title="BIK-style Affordability",
+            description="Provide income and affordability information for the credit mock.",
+            fields=[
+                FormFieldConfig("monthly_income", "number", True),
+                FormFieldConfig("monthly_expenses", "number", True),
+                FormFieldConfig("outstanding_debts", "number", True),
+            ],
+            required_integrations=["credit_bureau"],
+        ),
+    ],
+)
 </file>
 
 <file path="flows/spain_business.py">
+from domain.flow import FlowConfig, FlowStep, FormFieldConfig
 
+
+spain_business_flow = FlowConfig(
+    country="SPAIN",
+    account_type="business",
+    steps=[
+        FlowStep(
+            step_id="business_identity",
+            title="Company NIF and Legal Form",
+            description="Enter company NIF, legal form and registered address.",
+            fields=[
+                FormFieldConfig("company_identifier", "text", True),
+                FormFieldConfig("legal_name", "text", True),
+                FormFieldConfig("legal_form", "select", True, ["SL", "SA", "Autonomo"]),
+                FormFieldConfig("address", "text", True),
+            ],
+            required_integrations=["registry"],
+        ),
+        FlowStep(
+            step_id="representative",
+            title="Legal Representative",
+            description="Verify representative identity and authority.",
+            fields=[
+                FormFieldConfig("representative_name", "text", True),
+                FormFieldConfig("representative_id", "text", True),
+                FormFieldConfig("has_signatory_authority", "boolean", True),
+            ],
+            required_integrations=["identity", "representative"],
+        ),
+        FlowStep(
+            step_id="beneficial_owners",
+            title="Beneficial Ownership",
+            description="Capture beneficial owners and ownership percentages.",
+            fields=[
+                FormFieldConfig("ubo_count", "number", True),
+                FormFieldConfig("largest_ownership_percent", "number", True),
+            ],
+            required_integrations=["ubo_kyc", "sanctions"],
+        ),
+        FlowStep(
+            step_id="business_profile",
+            title="KYB and Bank Account",
+            description="Provide sector, turnover, tax details and expected usage.",
+            fields=[
+                FormFieldConfig("sector", "select", True, ["retail", "services", "manufacturing", "financial_services"]),
+                FormFieldConfig("annual_turnover", "number", True),
+                FormFieldConfig("expected_monthly_volume", "number", True),
+                FormFieldConfig("iban", "text", True),
+            ],
+            required_integrations=["business_credit", "bank_account"],
+        ),
+    ],
+)
 </file>
 
 <file path="flows/spain_individual.py">
+from domain.flow import FlowConfig, FlowStep, FormFieldConfig
 
+
+spain_individual_flow = FlowConfig(
+    country="SPAIN",
+    account_type="private",
+    steps=[
+        FlowStep(
+            step_id="collect_identity",
+            title="DNI/NIE Verification",
+            description="Enter your DNI or NIE so we can run a deterministic identity check.",
+            fields=[
+                FormFieldConfig("personal_identity_number", "text", True),
+            ],
+            required_integrations=["identity"],
+        ),
+        FlowStep(
+            step_id="confirm_contact",
+            title="Contact and Address",
+            description="Confirm contact details, province and residential address.",
+            fields=[
+                FormFieldConfig("address", "text", True),
+                FormFieldConfig("province", "text", True),
+                FormFieldConfig("phone_number", "text", True),
+            ],
+            required_integrations=["address_lookup"],
+        ),
+        FlowStep(
+            step_id="regulatory_declarations",
+            title="Compliance Declarations",
+            description="Confirm consent, PEP status, sanctions declaration and tax residency.",
+            fields=[
+                FormFieldConfig("is_pep", "boolean", True),
+                FormFieldConfig("tax_residency", "select", True, ["ES", "SE", "PL"]),
+            ],
+            required_integrations=["sanctions"],
+        ),
+        FlowStep(
+            step_id="financial_profile",
+            title="Affordability Profile",
+            description="Provide income, housing costs and other debts for credit decisioning.",
+            fields=[
+                FormFieldConfig("monthly_income", "number", True),
+                FormFieldConfig("monthly_expenses", "number", True),
+                FormFieldConfig("outstanding_debts", "number", True),
+            ],
+            required_integrations=["credit_bureau"],
+        ),
+    ],
+)
 </file>
 
 <file path="flows/sweden_business.py">
+from domain.flow import FlowConfig, FlowStep, FormFieldConfig
 
+
+sweden_business_flow = FlowConfig(
+    country="SWEDEN",
+    account_type="business",
+    steps=[
+        FlowStep(
+            step_id="business_identity",
+            title="Company Details",
+            description="Enter organisation number, legal name and legal form.",
+            fields=[
+                FormFieldConfig("company_identifier", "text", True),
+                FormFieldConfig("legal_name", "text", True),
+                FormFieldConfig("legal_form", "select", True, ["AB", "HB", "Enskild firma"]),
+            ],
+            required_integrations=["registry"],
+        ),
+        FlowStep(
+            step_id="representative",
+            title="Authorised Representative",
+            description="Confirm the representative and signatory authority.",
+            fields=[
+                FormFieldConfig("representative_name", "text", True),
+                FormFieldConfig("representative_id", "text", True),
+                FormFieldConfig("has_signatory_authority", "boolean", True),
+            ],
+            required_integrations=["representative"],
+        ),
+        FlowStep(
+            step_id="beneficial_owners",
+            title="Beneficial Owners",
+            description="Capture beneficial owner count and highest ownership percentage.",
+            fields=[
+                FormFieldConfig("ubo_count", "number", True),
+                FormFieldConfig("largest_ownership_percent", "number", True),
+            ],
+            required_integrations=["ubo_kyc", "sanctions"],
+        ),
+        FlowStep(
+            step_id="business_profile",
+            title="Business Activity",
+            description="Provide business activity, turnover and expected usage.",
+            fields=[
+                FormFieldConfig("sector", "select", True, ["retail", "services", "manufacturing", "financial_services"]),
+                FormFieldConfig("annual_turnover", "number", True),
+                FormFieldConfig("expected_monthly_volume", "number", True),
+            ],
+            required_integrations=["business_credit"],
+        ),
+    ],
+)
 </file>
 
 <file path="flows/sweden_individual.py">
@@ -516,8 +1010,9 @@ sweden_individual_flow = FlowConfig(
                 ),
                 FormFieldConfig(
                     field_name="tax_residency",
-                    field_type="text",
-                    is_required=True
+                    field_type="select",
+                    is_required=True,
+                    options=["SE", "ES", "PL"]
                 )
             ],
             required_integrations=["sanctions"]
@@ -725,7 +1220,96 @@ def health_check():
 </file>
 
 <file path="README.md">
+# Ikano-style Onboarding Flow
 
+Sample Python web application for a configurable customer onboarding journey across Sweden, Spain and Poland for private and business customers.
+
+## What is included
+
+- Six configured journeys: Sweden, Spain and Poland for `private` and `business`.
+- Server-rendered FastAPI/Jinja web flow with step validation and a progress indicator.
+- SQLite persistence for applications, step responses, integration logs, request IDs and optimistic versions.
+- Deterministic mocked checks for identity, address lookup, sanctions/PEP, registry, representative authority, UBO/KYB, credit and bank-account outcomes.
+- Decision outcomes: `APPROVED`, `MANUAL_REVIEW` and `REJECTED`.
+- State transition checks prevent users from jumping ahead to later steps before prior steps are completed.
+- Resume entry point for incomplete applications.
+- Tests for flow registration, validation, decisioning and orchestration behavior.
+
+## Run locally
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\uvicorn main:app --reload
+```
+
+Open `http://127.0.0.1:8000`.
+
+Required local configuration lives in `.env`:
+
+```env
+DATABASE_URL=sqlite:///./onboarding.db
+ONBOARDING_INTERNAL_SECRET=replace-this-local-development-secret
+```
+
+## Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+## Architecture
+
+- `web/`: FastAPI routes, request parsing, validation orchestration and dependency wiring.
+- `templates/`: Jinja pages for start, step, resume and decision screens.
+- `flows/`: country and account-type flow configuration. Adding a new journey should mostly mean adding another `FlowConfig` and registering it.
+- `domain/`: flow model, status model, decisioning rules and ports.
+- `services/`: onboarding and resume use cases.
+- `integrations/`: deterministic mock external clients.
+- `repositories/`: SQLAlchemy persistence implementation.
+- `db/`: SQLite engine/session and ORM records.
+
+The main design choice is to keep the flow definitions declarative and keep orchestration in `OnboardingService`. The service still maps integration names to deterministic mock behavior, but the web layer no longer has a separate hard-coded controller branch for every step.
+
+## Data model
+
+- `applications`: selected country/type, current status, optimistic version, request ID, resume token fields and timestamps.
+- `step_responses`: one saved response per application step, with a payload hash for idempotency.
+- `integration_logs`: append-only audit-style record of mocked external checks, outcome, request ID and execution time.
+
+Sensitive identifiers such as personal identity numbers, representative IDs, company identifiers and IBANs are redacted before being stored in step response JSON. The sample still uses a local SQLite database and is not intended as production secure storage.
+
+Step response payload digests use HMAC-SHA256 with `ONBOARDING_INTERNAL_SECRET`. This avoids plain unsalted hashes of low-entropy identifiers and supports per-step change detection/idempotency. In production the secret should come from managed secret storage with rotation.
+
+## Deterministic mock behavior
+
+- Identity: values containing `0000` reject, values containing `1111` go to manual review, other valid formats approve.
+- Sanctions/PEP: PEP declarations go to manual review; blocked tax residencies in the rule engine reject.
+- Credit: negative disposable income rejects; high debt-to-income goes to manual review.
+- Registry: company identifiers starting with `00` reject; identifiers ending in `1111` go to manual review.
+- Representative: missing signatory authority goes to manual review.
+- UBO: missing UBO rejects; very concentrated ownership goes to manual review.
+- Business credit: zero turnover rejects; high-risk sector or expected monthly volume above turnover goes to manual review.
+- Bank account: IBANs ending in `9999` simulate a name mismatch and go to manual review.
+
+## Assumptions and tradeoffs
+
+- Country rules are representative mocks, not legal/compliance claims.
+- The UI intentionally stays simple; the focus is flow adaptability, validation, state and decisioning.
+- Resume currently accepts the reference entered by the user and returns a generic error to avoid state disclosure. A production version should issue a separate high-entropy resume token or magic link with expiry, rate limiting and audit events.
+- Audit logging is persisted in `integration_logs`; a production version would likely make audit writes more explicit, immutable and monitored.
+- No real national eID, KYC, registry, credit bureau or banking API is called.
+
+## Useful demo inputs
+
+- Sweden private identity: `199001011234`
+- Spain private identity: `12345678Z`
+- Poland private identity: `90010112345`
+- Phone: `+46701234567`
+- Address: `Main Street 12`
+- Approved financial profile: income `5000`, expenses `2000`, debts `500`
+- Manual review financial profile: income `5000`, expenses `1000`, debts `4000`
+- Rejected financial profile: income `1000`, expenses `1500`, debts `0`
 </file>
 
 <file path="repositories/application_repo.py">
@@ -762,6 +1346,52 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             self.session.expunge_all() 
             raise ValueError(f"Application session with ID {application_id} already exists.")
 
+    def _redact_form_data(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
+        redacted = dict(form_data)
+        for key in [
+            "personal_identity_number",
+            "representative_id",
+            "company_identifier",
+            "iban",
+            "address",
+            "phone_number",
+        ]:
+            if key in redacted:
+                value = str(redacted[key])
+                redacted[key] = f"***{value[-4:]}" if len(value) >= 4 else "***"
+        return redacted
+
+    def _redact_integration_payload(self, response_json: str) -> str:
+        sensitive_keys = {
+            "personal_identity_number",
+            "representative_id",
+            "company_identifier",
+            "iban",
+            "address",
+            "phone_number",
+            "income",
+            "expenses",
+            "debts",
+            "monthly_income",
+            "monthly_expenses",
+            "outstanding_debts",
+            "tax_residency",
+            "is_pep",
+        }
+        try:
+            payload = json.loads(response_json)
+        except json.JSONDecodeError:
+            return "{}"
+
+        if not isinstance(payload, dict):
+            return "{}"
+
+        redacted = {
+            key: "***" if key in sensitive_keys else value
+            for key, value in payload.items()
+        }
+        return json.dumps(redacted, sort_keys=True)
+
     def get_application_status(self, application_id: str) -> Optional[str]:
         record: Any = self.session.query(ApplicationRecord).filter(ApplicationRecord.id == application_id).first()
         return cast(Optional[str], record.status) if record else None
@@ -787,7 +1417,7 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
         self.session.commit()
 
     def save_step_response(self, application_id: str, step_id: str, form_data: Dict[str, Any], payload_hash: str) -> None:
-        serialized_data = json.dumps(form_data, sort_keys=True)
+        serialized_data = json.dumps(self._redact_form_data(form_data), sort_keys=True)
         record: Any = self.session.query(StepResponseRecord).filter(
             StepResponseRecord.application_id == application_id,
             StepResponseRecord.step_id == step_id
@@ -831,7 +1461,7 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             application_id=application_id,
             service_name=service_name,
             status_outcome=status_outcome,
-            raw_response_json=response_json,
+            raw_response_json=self._redact_integration_payload(response_json),
             request_id=request_id
         )
         try:
@@ -862,7 +1492,9 @@ python-multipart
 <file path="services/onboarding_service.py">
 import json
 import hashlib
+import hmac
 from typing import Dict, Any, Optional
+from config import settings
 from domain.ports import (
     ApplicationRepository, 
     IdentityVerificationService, 
@@ -873,6 +1505,10 @@ from domain.flow_registry import flow_registry
 from domain.entities import ApplicationEntity
 from domain.states import ApplicationStatus
 from domain.decisioning import AutomatedDecisionEngine
+
+
+class StateTransitionError(Exception):
+    pass
 
 class OnboardingService:
     def __init__(
@@ -888,9 +1524,36 @@ class OnboardingService:
         self.credit_service = credit_service
 
     def _generate_payload_hash(self, form_data: Dict[str, Any]) -> str:
-        """Generates a reproducible hash of form responses to check if input values changed."""
+        """Generates a keyed digest so low-entropy identifiers are not exposed to offline guessing."""
         serialized = json.dumps(form_data, sort_keys=True)
-        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return hmac.new(
+            settings.ONBOARDING_INTERNAL_SECRET.encode("utf-8"),
+            serialized.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _money_band(self, value: float) -> str:
+        if value < 1000:
+            return "below_1000"
+        if value < 3000:
+            return "1000_2999"
+        if value < 10000:
+            return "3000_9999"
+        return "10000_plus"
+
+    def _assert_step_is_reachable(self, application_id: str, flow, step_id: str) -> None:
+        requested_index = next(
+            (index for index, step in enumerate(flow.steps) if step.step_id == step_id),
+            None,
+        )
+        if requested_index is None:
+            raise StateTransitionError("Requested step is not part of this onboarding flow.")
+
+        for previous_step in flow.steps[:requested_index]:
+            if not self.repository.get_step_response(application_id, previous_step.step_id):
+                raise StateTransitionError(
+                    f"Step '{step_id}' cannot be submitted before completing '{previous_step.step_id}'."
+                )
 
     def process_step_submission(
         self,
@@ -912,7 +1575,9 @@ class OnboardingService:
             raise ValueError(f"Step {step_id} does not map to this specific application configuration workflow.")
 
         # Reconstruct the application model state cleanly from historical records
-        current_status_str = self.repository.get_application_status(application_id) or "STARTED"
+        current_status_str = self.repository.get_application_status(application_id)
+        if current_status_str is None:
+            raise ValueError(f"Application {application_id} does not exist.")
         application = ApplicationEntity(
             id=application_id,
             country=country,
@@ -921,6 +1586,11 @@ class OnboardingService:
             version=current_version
         )
 
+        if application.status in [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+            raise StateTransitionError("Terminal applications cannot be changed.")
+
+        self._assert_step_is_reachable(application_id, flow, step_id)
+
         existing_response = self.repository.get_step_response(application_id, step_id)
         current_hash = self._generate_payload_hash(form_data)
         
@@ -928,10 +1598,13 @@ class OnboardingService:
             next_step_id = flow.get_next_step_id(step_id)
             return {"status": application.status.value, "next_step_id": next_step_id}
 
+        # Persist the validated step payload before external checks so resumability and support state stay coherent.
+        self.repository.save_step_response(application_id, step_id, form_data, current_hash)
+
         # Evaluate platform integrations
         for integration in step_config.required_integrations:
             if integration == "identity":
-                pin = form_data.get("personal_identity_number", "")
+                pin = form_data.get("personal_identity_number") or form_data.get("representative_id", "")
                 result = self.identity_service.verify(pin)
                 self.repository.log_integration_check(
                     application_id, "identity", result.status_outcome, result.raw_response_json, request_id
@@ -945,7 +1618,7 @@ class OnboardingService:
 
             elif integration == "address_lookup":
                 # FIX: Gracefully process or log address checks instead of letting it drop through unhandled
-                mock_json = json.dumps({"address": form_data.get("address"), "status": "FETCHED"})
+                mock_json = json.dumps({"address_confidence": 0.92, "status": "FETCHED"})
                 self.repository.log_integration_check(
                     application_id, "address_lookup", "APPROVED", mock_json, request_id
                 )
@@ -955,7 +1628,11 @@ class OnboardingService:
                 tax_residency = form_data.get("tax_residency", "")
                 
                 decision_outcome = AutomatedDecisionEngine.evaluate_compliance_risk(tax_residency, is_pep)
-                mock_json = json.dumps({"tax_residency": tax_residency, "is_pep": is_pep, "outcome": decision_outcome.value})
+                mock_json = json.dumps({
+                    "screening_result": "possible_hit" if is_pep else "no_hit",
+                    "restricted_tax_residency": decision_outcome == ApplicationStatus.REJECTED,
+                    "outcome": decision_outcome.value,
+                })
                 self.repository.log_integration_check(
                     application_id, "sanctions", decision_outcome.value, mock_json, request_id
                 )
@@ -966,12 +1643,22 @@ class OnboardingService:
                     return {"status": application.status.value, "next_step_id": None}
 
             elif integration == "credit_bureau":
-                income = float(form_data.get("monthly_income", 0))
-                expenses = float(form_data.get("monthly_expenses", 0))
-                debts = float(form_data.get("outstanding_debts", 0))
+                try:
+                    income = float(form_data.get("monthly_income", 0))
+                    expenses = float(form_data.get("monthly_expenses", 0))
+                    debts = float(form_data.get("outstanding_debts", 0))
+                except (TypeError, ValueError) as err:
+                    raise ValueError("Financial inputs must be numeric.") from err
                 
                 decision_outcome = AutomatedDecisionEngine.evaluate_financial_risk(income, expenses, debts)
-                mock_json = json.dumps({"income": income, "expenses": expenses, "debts": debts, "outcome": decision_outcome.value})
+                disposable_income = income - expenses
+                debt_to_income_ratio = debts / income if income > 0 else 0
+                mock_json = json.dumps({
+                    "income_band": self._money_band(income),
+                    "disposable_income_band": self._money_band(max(disposable_income, 0)),
+                    "high_debt_to_income": debt_to_income_ratio > 0.60,
+                    "outcome": decision_outcome.value,
+                })
                 self.repository.log_integration_check(
                     application_id, "credit_bureau", decision_outcome.value, mock_json, request_id
                 )
@@ -980,9 +1667,82 @@ class OnboardingService:
                 self.repository.update_application_status(application.id, application.status.value, application.version)
                 return {"status": application.status.value, "next_step_id": None}
 
-        # Commit payload response
-        self.repository.save_step_response(application_id, step_id, form_data, current_hash)
-        
+            elif integration == "registry":
+                company_identifier = str(form_data.get("company_identifier", ""))
+                if company_identifier.startswith("00"):
+                    outcome = ApplicationStatus.REJECTED
+                    payload = {"registry_status": "not_found"}
+                elif company_identifier.endswith("1111"):
+                    outcome = ApplicationStatus.MANUAL_REVIEW
+                    payload = {"registry_status": "manual_review", "reason": "ambiguous_company_match"}
+                else:
+                    outcome = ApplicationStatus.APPROVED
+                    payload = {"registry_status": "active_company"}
+                self.repository.log_integration_check(application_id, "registry", outcome.value, json.dumps(payload), request_id)
+                if outcome in [ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+                    application.transition_status(outcome)
+                    self.repository.update_application_status(application.id, application.status.value, application.version)
+                    return {"status": application.status.value, "next_step_id": None}
+
+            elif integration == "representative":
+                has_authority = bool(form_data.get("has_signatory_authority"))
+                outcome = ApplicationStatus.APPROVED if has_authority else ApplicationStatus.MANUAL_REVIEW
+                payload = {"authority": "confirmed" if has_authority else "missing_or_unconfirmed"}
+                self.repository.log_integration_check(application_id, "representative", outcome.value, json.dumps(payload), request_id)
+                if outcome == ApplicationStatus.MANUAL_REVIEW:
+                    application.transition_status(outcome)
+                    self.repository.update_application_status(application.id, application.status.value, application.version)
+                    return {"status": application.status.value, "next_step_id": None}
+
+            elif integration == "ubo_kyc":
+                ubo_count = float(form_data.get("ubo_count", 0))
+                largest_ownership = float(form_data.get("largest_ownership_percent", 0))
+                if ubo_count <= 0:
+                    outcome = ApplicationStatus.REJECTED
+                    payload = {"ubo_status": "missing_ubo"}
+                elif largest_ownership >= 75:
+                    outcome = ApplicationStatus.MANUAL_REVIEW
+                    payload = {"ubo_status": "concentrated_ownership"}
+                else:
+                    outcome = ApplicationStatus.APPROVED
+                    payload = {"ubo_status": "verified"}
+                self.repository.log_integration_check(application_id, "ubo_kyc", outcome.value, json.dumps(payload), request_id)
+                if outcome in [ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+                    application.transition_status(outcome)
+                    self.repository.update_application_status(application.id, application.status.value, application.version)
+                    return {"status": application.status.value, "next_step_id": None}
+
+            elif integration == "business_credit":
+                turnover = float(form_data.get("annual_turnover", 0))
+                monthly_volume = float(form_data.get("expected_monthly_volume", 0))
+                sector = str(form_data.get("sector", ""))
+                if turnover <= 0:
+                    outcome = ApplicationStatus.REJECTED
+                    payload = {"business_credit": "no_turnover"}
+                elif sector == "FINANCIAL_SERVICES" or monthly_volume > turnover:
+                    outcome = ApplicationStatus.MANUAL_REVIEW
+                    payload = {"business_credit": "enhanced_due_diligence"}
+                else:
+                    outcome = ApplicationStatus.APPROVED
+                    payload = {"business_credit": "acceptable"}
+                payload["turnover_band"] = self._money_band(turnover)
+                payload["monthly_volume_band"] = self._money_band(monthly_volume)
+                self.repository.log_integration_check(application_id, "business_credit", outcome.value, json.dumps(payload), request_id)
+                if outcome in [ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+                    application.transition_status(outcome)
+                    self.repository.update_application_status(application.id, application.status.value, application.version)
+                    return {"status": application.status.value, "next_step_id": None}
+
+            elif integration == "bank_account":
+                iban = str(form_data.get("iban", ""))
+                outcome = ApplicationStatus.MANUAL_REVIEW if iban.endswith("9999") else ApplicationStatus.APPROVED
+                payload = {"iban_status": "name_mismatch" if outcome == ApplicationStatus.MANUAL_REVIEW else "iban_verified"}
+                self.repository.log_integration_check(application_id, "bank_account", outcome.value, json.dumps(payload), request_id)
+                if outcome == ApplicationStatus.MANUAL_REVIEW:
+                    application.transition_status(outcome)
+                    self.repository.update_application_status(application.id, application.status.value, application.version)
+                    return {"status": application.status.value, "next_step_id": None}
+
         # Calculate step routing transition parameters
         next_step_id = flow.get_next_step_id(step_id)
         if next_step_id is None:
@@ -1102,12 +1862,18 @@ class ResumeService:
 {% block content %}
 <div class="bg-white shadow rounded-lg p-8 max-w-md mx-auto mt-12">
     <h2 class="text-2xl font-bold text-gray-800 mb-2">Resume Session</h2>
-    <p class="text-gray-600 text-sm mb-6">Enter your global application identification signature reference string.</p>
+    <p class="text-gray-600 text-sm mb-6">Enter the resume reference issued when you started the application.</p>
+
+    {% if error_message %}
+    <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded text-sm text-red-700">
+        {{ error_message }}
+    </div>
+    {% endif %}
     
     <form action="/application/resume" method="POST" class="space-y-4">
         <div>
-            <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Application ID Reference</label>
-            <input type="text" name="application_id" required placeholder="uuid-v4 string pattern" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none">
+            <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Resume Reference</label>
+            <input type="text" name="application_id" required class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none">
         </div>
         <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold p-3 rounded shadow transition-colors">
             Verify & Fetch Session
@@ -1142,19 +1908,27 @@ class ResumeService:
 <div class="bg-white shadow rounded-lg p-8 max-w-md mx-auto mt-12">
     <h2 class="text-2xl font-bold text-gray-800 mb-2">Begin Application</h2>
     <p class="text-gray-600 text-sm mb-6">Select your regulatory jurisdiction and entity model structure.</p>
+
+    {% if error_message %}
+    <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded text-sm text-red-700">
+        <strong>Validation Error:</strong> {{ error_message }}
+    </div>
+    {% endif %}
     
     <form action="/application/start" method="POST" class="space-y-4">
         <div>
             <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Country Jurisdiction</label>
             <select name="country" class="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none">
                 <option value="SWEDEN">Sweden (BankID enabled)</option>
-                <option value="SPAIN">Spain (Asynchronous Registry fallback)</option>
+                <option value="SPAIN">Spain (DNI/NIE and registry checks)</option>
+                <option value="POLAND">Poland (PESEL and CEIDG/KRS checks)</option>
             </select>
         </div>
         <div>
             <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Account Type Profile</label>
             <select name="account_type" class="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none">
                 <option value="private">Private Individual</option>
+                <option value="business">Business</option>
             </select>
         </div>
         <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold p-3 rounded shadow transition-colors">
@@ -1173,6 +1947,15 @@ class ResumeService:
         <span class="text-xs font-bold text-blue-600 tracking-widest uppercase">{{ country }} &middot; {{ type }}</span>
         <h2 class="text-2xl font-bold text-gray-800 mt-1">{{ step.title }}</h2>
         <p class="text-gray-600 text-sm mt-1">{{ step.description }}</p>
+        <div class="mt-4">
+            <div class="flex justify-between text-xs text-gray-500 mb-1">
+                <span>Step {{ current_step_number }} of {{ total_steps }}</span>
+                <span>{{ progress_percent }}%</span>
+            </div>
+            <div class="h-2 bg-gray-100 rounded overflow-hidden">
+                <div class="h-full bg-blue-600" style="width: {{ progress_percent }}%"></div>
+            </div>
+        </div>
     </div>
 
     {% if error_message %}
@@ -1196,11 +1979,17 @@ class ResumeService:
             {% if field.field_type == 'text' %}
                 <input type="text" name="{{ field.field_name }}" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none" {% if field.is_required %}required{% endif %}>
             {% elif field.field_type == 'number' %}
-                <input type="number" step="any" name="{{ field.field_name }}" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none" {% if field.is_required %}required{% endif %}>
+                <input type="number" min="0" step="any" name="{{ field.field_name }}" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none" {% if field.is_required %}required{% endif %}>
+            {% elif field.field_type == 'select' %}
+                <select name="{{ field.field_name }}" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none" {% if field.is_required %}required{% endif %}>
+                    {% for option in field.options %}
+                    <option value="{{ option }}">{{ option }}</option>
+                    {% endfor %}
+                </select>
             {% elif field.field_type == 'boolean' %}
                 <div class="flex items-center space-x-3 mt-1">
                     <input type="checkbox" name="{{ field.field_name }}" value="true" class="h-4 w-4 border-gray-300 rounded text-blue-600 focus:ring-blue-500">
-                    <span class="text-sm text-gray-600">Confirm confirmation parameter signature</span>
+                    <span class="text-sm text-gray-600">Yes</span>
                 </div>
             {% endif %}
         </div>
@@ -1251,8 +2040,16 @@ def get_onboarding_service(
 </file>
 
 <file path="web/forms.py">
-from pydantic import BaseModel, Field, field_validator
+import re
 from typing import Dict, Any
+
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+from domain.flow import FlowStep
+
+
+class FormValidationError(ValueError):
+    pass
 
 class IdentityForm(BaseModel):
     personal_identity_number: str = Field(..., min_length=1, max_length=30)
@@ -1317,6 +2114,119 @@ class FinancialForm(BaseModel):
             monthly_expenses=safe_float(request_form.get("monthly_expenses")),
             outstanding_debts=safe_float(request_form.get("outstanding_debts"))
         )
+
+
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _validate_identity(country: str, value: str) -> str:
+    compact = value.replace("-", "").replace(" ", "").upper()
+    if country.upper() == "SWEDEN":
+        if not re.fullmatch(r"(\d{10}|\d{12})", compact):
+            raise FormValidationError("Swedish personal identity number must be YYMMDDXXXX or YYYYMMDDXXXX.")
+    elif country.upper() == "SPAIN":
+        if not re.fullmatch(r"([XYZ]\d{7}[A-Z]|\d{8}[A-Z])", compact):
+            raise FormValidationError("Spanish DNI/NIE must look like 12345678Z or X1234567L.")
+    elif country.upper() == "POLAND":
+        if not re.fullmatch(r"\d{11}", compact):
+            raise FormValidationError("Polish PESEL must contain exactly 11 digits.")
+    elif not re.fullmatch(r"[A-Z0-9]{6,20}", compact):
+        raise FormValidationError("Identity reference has an unsupported format.")
+    return compact
+
+
+def _validate_company_identifier(country: str, value: str) -> str:
+    compact = value.replace("-", "").replace(" ", "").upper()
+    if country.upper() == "SWEDEN":
+        valid = re.fullmatch(r"\d{10}", compact)
+        message = "Swedish organisation number must contain 10 digits."
+    elif country.upper() == "SPAIN":
+        valid = re.fullmatch(r"[A-Z]\d{7}[A-Z0-9]", compact)
+        message = "Spanish company NIF must look like B12345678."
+    else:
+        valid = re.fullmatch(r"\d{10}|\d{9}|\d{14}", compact)
+        message = "Polish company identifier must be a NIP, REGON or KRS-style numeric identifier."
+    if not valid:
+        raise FormValidationError(message)
+    return compact
+
+
+def _validate_phone(value: str) -> str:
+    normalized = value.replace(" ", "")
+    if not re.fullmatch(r"\+?[0-9]{7,15}", normalized):
+        raise FormValidationError("Phone number must contain 7 to 15 digits and may start with +.")
+    return normalized
+
+
+def _validate_iban(value: str) -> str:
+    compact = value.replace(" ", "").upper()
+    if not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{11,30}", compact):
+        raise FormValidationError("IBAN must start with a country code and check digits, for example ES9121000418450200051332.")
+    return compact
+
+
+def _validate_number(field_name: str, value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as err:
+        raise FormValidationError(f"{field_name.replace('_', ' ').title()} must be a valid number.") from err
+    if number < 0:
+        raise FormValidationError(f"{field_name.replace('_', ' ').title()} cannot be negative.")
+    if field_name == "largest_ownership_percent" and number > 100:
+        raise FormValidationError("Largest ownership percent cannot exceed 100.")
+    if field_name == "ubo_count" and number < 1:
+        raise FormValidationError("At least one beneficial owner must be supplied.")
+    return number
+
+
+def validate_step_payload(step: FlowStep, country: str, form_data: Dict[str, Any]) -> Dict[str, Any]:
+    clean: Dict[str, Any] = {}
+    for field in step.fields:
+        raw_value = form_data.get(field.field_name)
+        if field.field_type == "boolean":
+            clean[field.field_name] = _clean_text(raw_value).lower() in {"true", "on", "yes", "1"}
+            continue
+
+        text_value = _clean_text(raw_value)
+        if field.is_required and not text_value:
+            raise FormValidationError(f"{field.field_name.replace('_', ' ').title()} is required.")
+
+        if field.field_type == "number":
+            clean[field.field_name] = _validate_number(field.field_name, raw_value)
+        elif field.field_type == "select":
+            allowed = {option.upper() for option in field.options}
+            selected = text_value.upper()
+            if selected not in allowed:
+                raise FormValidationError(
+                    f"{field.field_name.replace('_', ' ').title()} must be one of: {', '.join(field.options)}."
+                )
+            clean[field.field_name] = selected
+        elif field.field_name in {"personal_identity_number", "representative_id"}:
+            clean[field.field_name] = _validate_identity(country, text_value)
+        elif field.field_name == "company_identifier":
+            clean[field.field_name] = _validate_company_identifier(country, text_value)
+        elif field.field_name == "phone_number":
+            clean[field.field_name] = _validate_phone(text_value)
+        elif field.field_name == "iban":
+            clean[field.field_name] = _validate_iban(text_value)
+        elif field.field_name == "address":
+            if len(text_value) < 8 or not re.search(r"\d", text_value):
+                raise FormValidationError("Address must include a street or building number.")
+            clean[field.field_name] = text_value
+        elif field.field_name in {"legal_name", "representative_name"}:
+            if not re.fullmatch(r"[A-Za-zÀ-ž0-9 .,'&-]{2,120}", text_value):
+                raise FormValidationError(f"{field.field_name.replace('_', ' ').title()} contains unsupported characters.")
+            clean[field.field_name] = text_value
+        elif field.field_name == "province":
+            if not re.fullmatch(r"[A-Za-zÀ-ž .'-]{2,80}", text_value):
+                raise FormValidationError("Province must contain a valid province name.")
+            clean[field.field_name] = text_value
+        else:
+            if len(text_value) < 2:
+                raise FormValidationError(f"{field.field_name.replace('_', ' ').title()} is too short.")
+            clean[field.field_name] = text_value
+    return clean
 </file>
 
 <file path="web/middleware.py">
@@ -1343,14 +2253,40 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import db.models
 from web.dependencies import get_onboarding_service, get_application_repository
-from services.onboarding_service import OnboardingService
+from services.onboarding_service import OnboardingService, StateTransitionError
 from repositories.application_repo import SQLAlchemyApplicationRepository
-from web.forms import IdentityForm, ContactForm, RegulatoryForm, FinancialForm
-from domain.flow_registry import flow_registry
+from web.forms import FormValidationError, validate_step_payload
+from domain.flow_registry import FlowRegistryError, flow_registry
 from services.resume_service import ResumeService, ResumeApplicationError
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+
+
+def _progress_context(flow, step_id: str) -> dict:
+    step_ids = [step.step_id for step in flow.steps]
+    current_index = step_ids.index(step_id) if step_id in step_ids else 0
+    total_steps = len(step_ids)
+    current_step_number = current_index + 1
+    return {
+        "current_step_number": current_step_number,
+        "total_steps": total_steps,
+        "progress_percent": int((current_step_number / total_steps) * 100) if total_steps else 0,
+    }
+
+
+def _assert_step_can_be_rendered(flow, repository: SQLAlchemyApplicationRepository, application_id: str, step_id: str) -> None:
+    step_ids = [step.step_id for step in flow.steps]
+    requested_index = step_ids.index(step_id)
+    first_incomplete_index = len(step_ids)
+
+    for index, step in enumerate(flow.steps):
+        if not repository.get_step_response(application_id, step.step_id):
+            first_incomplete_index = index
+            break
+
+    if requested_index > first_incomplete_index:
+        raise HTTPException(status_code=403, detail="Complete the previous onboarding steps before opening this step.")
 
 @router.get("/", response_class=HTMLResponse)
 async def index_view(request: Request):
@@ -1371,14 +2307,23 @@ async def start_application_view(
     # Correctly retrieve from middleware state
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     
+    try:
+        flow = flow_registry.get_flow(country, account_type)
+    except FlowRegistryError:
+        return templates.TemplateResponse(
+            request,
+            "start.html",
+            {"error_message": "Unsupported onboarding flow. Choose one of the listed country and account type combinations."},
+            status_code=400,
+        )
+
     service.repository.create_application(
         application_id=application_id,
         country=country,
         account_type=account_type,
         request_id=request_id
     )
-    
-    flow = flow_registry.get_flow(country, account_type)
+
     first_step_id = flow.steps[0].step_id
     
     url = f"/application/{application_id}/step/{first_step_id}?country={country}&type={account_type}"
@@ -1395,9 +2340,11 @@ async def handle_resume_submission(
         db.models.ApplicationRecord.id == app_id_clean
     ).first()
     
+    generic_resume_error = "We could not resume that application. Check the resume reference or contact support."
+
     if not app_record:
         return templates.TemplateResponse(
-            request, "resume.html", {"error_message": "Invalid identification reference sequence identifier."}
+            request, "resume.html", {"error_message": generic_resume_error}
         )
         
     resumer = ResumeService(repository=repository)
@@ -1409,7 +2356,7 @@ async def handle_resume_submission(
         url = f"/application/{app_id_clean}/step/{outcome['next_step_id']}?country={country_str}&type={account_type_str}"
         return RedirectResponse(url=url, status_code=303)
     except ResumeApplicationError as err:
-        return templates.TemplateResponse(request, "resume.html", {"error_message": str(err)})
+        return templates.TemplateResponse(request, "resume.html", {"error_message": generic_resume_error})
 
 @router.get("/application/{application_id}/step/{step_id}", response_class=HTMLResponse)
 async def render_step_view(
@@ -1421,7 +2368,10 @@ async def render_step_view(
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
     """Renders forms dynamically using state context configurations fetched from the database layer."""
-    flow = flow_registry.get_flow(country, type)
+    try:
+        flow = flow_registry.get_flow(country, type)
+    except FlowRegistryError as err:
+        raise HTTPException(status_code=400, detail="Unsupported onboarding flow.") from err
     step_config = flow.get_step_by_id(step_id)
     if not step_config:
         raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
@@ -1431,7 +2381,10 @@ async def render_step_view(
         db.models.ApplicationRecord.id == application_id
     ).first()
     
-    db_version = app_record.version if app_record else 1
+    if not app_record:
+        raise HTTPException(status_code=404, detail="Application not found.")
+    db_version = app_record.version
+    _assert_step_can_be_rendered(flow, repository, application_id, step_id)
         
     return templates.TemplateResponse(
         request,
@@ -1441,7 +2394,8 @@ async def render_step_view(
             "step": step_config,
             "country": country,
             "type": type,
-            "version": db_version
+            "version": db_version,
+            **_progress_context(flow, step_id),
         }
     )
 
@@ -1460,23 +2414,17 @@ async def submit_step_view(
     form_dict = {k: v for k, v in form_data_raw.items()}
     
     try:
-        if step_id == "collect_identity":
-            form_model = await IdentityForm.from_request(form_dict)
-            clean_payload = form_model.model_dump()
-        elif step_id == "confirm_contact":
-            form_model = await ContactForm.from_request(form_dict)
-            clean_payload = form_model.model_dump()
-        elif step_id == "regulatory_declarations":
-            form_model = await RegulatoryForm.from_request(form_dict)
-            clean_payload = form_model.model_dump()
-        elif step_id == "financial_profile":
-            form_model = await FinancialForm.from_request(form_dict)
-            clean_payload = form_model.model_dump()
-        else:
-            raise HTTPException(status_code=400, detail="Mismatched input schema processing specification parameter.")
-    except Exception as validation_err:
         flow = flow_registry.get_flow(country, type)
-        step_config = flow.get_step_by_id(step_id)
+    except FlowRegistryError as err:
+        raise HTTPException(status_code=400, detail="Unsupported onboarding flow.") from err
+
+    step_config = flow.get_step_by_id(step_id)
+    if not step_config:
+        raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
+
+    try:
+        clean_payload = validate_step_payload(step_config, country, form_dict)
+    except FormValidationError as validation_err:
         return templates.TemplateResponse(
             request,
             "step.html",
@@ -1486,19 +2434,36 @@ async def submit_step_view(
                 "country": country,
                 "type": type,
                 "version": version,
-                "error_message": str(validation_err)
+                "error_message": str(validation_err),
+                **_progress_context(flow, step_id),
             }
         )
 
-    result = service.process_step_submission(
-        application_id=application_id,
-        country=country,
-        account_type=type,
-        step_id=step_id,
-        form_data=clean_payload,
-        current_version=version,
-        request_id=request_id
-    )
+    try:
+        result = service.process_step_submission(
+            application_id=application_id,
+            country=country,
+            account_type=type,
+            step_id=step_id,
+            form_data=clean_payload,
+            current_version=version,
+            request_id=request_id
+        )
+    except StateTransitionError as err:
+        return templates.TemplateResponse(
+            request,
+            "step.html",
+            {
+                "application_id": application_id,
+                "step": step_config,
+                "country": country,
+                "type": type,
+                "version": version,
+                "error_message": str(err),
+                **_progress_context(flow, step_id),
+            },
+            status_code=409,
+        )
     
     status_outcome = result["status"]
     next_step_id = result["next_step_id"]

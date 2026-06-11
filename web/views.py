@@ -4,14 +4,40 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 import db.models
 from web.dependencies import get_onboarding_service, get_application_repository
-from services.onboarding_service import OnboardingService
+from services.onboarding_service import OnboardingService, StateTransitionError
 from repositories.application_repo import SQLAlchemyApplicationRepository
-from web.forms import IdentityForm, ContactForm, RegulatoryForm, FinancialForm
-from domain.flow_registry import flow_registry
+from web.forms import FormValidationError, validate_step_payload
+from domain.flow_registry import FlowRegistryError, flow_registry
 from services.resume_service import ResumeService, ResumeApplicationError
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+
+
+def _progress_context(flow, step_id: str) -> dict:
+    step_ids = [step.step_id for step in flow.steps]
+    current_index = step_ids.index(step_id) if step_id in step_ids else 0
+    total_steps = len(step_ids)
+    current_step_number = current_index + 1
+    return {
+        "current_step_number": current_step_number,
+        "total_steps": total_steps,
+        "progress_percent": int((current_step_number / total_steps) * 100) if total_steps else 0,
+    }
+
+
+def _assert_step_can_be_rendered(flow, repository: SQLAlchemyApplicationRepository, application_id: str, step_id: str) -> None:
+    step_ids = [step.step_id for step in flow.steps]
+    requested_index = step_ids.index(step_id)
+    first_incomplete_index = len(step_ids)
+
+    for index, step in enumerate(flow.steps):
+        if not repository.get_step_response(application_id, step.step_id):
+            first_incomplete_index = index
+            break
+
+    if requested_index > first_incomplete_index:
+        raise HTTPException(status_code=403, detail="Complete the previous onboarding steps before opening this step.")
 
 @router.get("/", response_class=HTMLResponse)
 async def index_view(request: Request):
@@ -32,14 +58,23 @@ async def start_application_view(
     # Correctly retrieve from middleware state
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     
+    try:
+        flow = flow_registry.get_flow(country, account_type)
+    except FlowRegistryError:
+        return templates.TemplateResponse(
+            request,
+            "start.html",
+            {"error_message": "Unsupported onboarding flow. Choose one of the listed country and account type combinations."},
+            status_code=400,
+        )
+
     service.repository.create_application(
         application_id=application_id,
         country=country,
         account_type=account_type,
         request_id=request_id
     )
-    
-    flow = flow_registry.get_flow(country, account_type)
+
     first_step_id = flow.steps[0].step_id
     
     url = f"/application/{application_id}/step/{first_step_id}?country={country}&type={account_type}"
@@ -56,9 +91,11 @@ async def handle_resume_submission(
         db.models.ApplicationRecord.id == app_id_clean
     ).first()
     
+    generic_resume_error = "We could not resume that application. Check the resume reference or contact support."
+
     if not app_record:
         return templates.TemplateResponse(
-            request, "resume.html", {"error_message": "Invalid identification reference sequence identifier."}
+            request, "resume.html", {"error_message": generic_resume_error}
         )
         
     resumer = ResumeService(repository=repository)
@@ -70,7 +107,7 @@ async def handle_resume_submission(
         url = f"/application/{app_id_clean}/step/{outcome['next_step_id']}?country={country_str}&type={account_type_str}"
         return RedirectResponse(url=url, status_code=303)
     except ResumeApplicationError as err:
-        return templates.TemplateResponse(request, "resume.html", {"error_message": str(err)})
+        return templates.TemplateResponse(request, "resume.html", {"error_message": generic_resume_error})
 
 @router.get("/application/{application_id}/step/{step_id}", response_class=HTMLResponse)
 async def render_step_view(
@@ -82,7 +119,10 @@ async def render_step_view(
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
     """Renders forms dynamically using state context configurations fetched from the database layer."""
-    flow = flow_registry.get_flow(country, type)
+    try:
+        flow = flow_registry.get_flow(country, type)
+    except FlowRegistryError as err:
+        raise HTTPException(status_code=400, detail="Unsupported onboarding flow.") from err
     step_config = flow.get_step_by_id(step_id)
     if not step_config:
         raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
@@ -92,7 +132,10 @@ async def render_step_view(
         db.models.ApplicationRecord.id == application_id
     ).first()
     
-    db_version = app_record.version if app_record else 1
+    if not app_record:
+        raise HTTPException(status_code=404, detail="Application not found.")
+    db_version = app_record.version
+    _assert_step_can_be_rendered(flow, repository, application_id, step_id)
         
     return templates.TemplateResponse(
         request,
@@ -102,7 +145,8 @@ async def render_step_view(
             "step": step_config,
             "country": country,
             "type": type,
-            "version": db_version
+            "version": db_version,
+            **_progress_context(flow, step_id),
         }
     )
 
@@ -121,23 +165,17 @@ async def submit_step_view(
     form_dict = {k: v for k, v in form_data_raw.items()}
     
     try:
-        if step_id == "collect_identity":
-            form_model = await IdentityForm.from_request(form_dict)
-            clean_payload = form_model.model_dump()
-        elif step_id == "confirm_contact":
-            form_model = await ContactForm.from_request(form_dict)
-            clean_payload = form_model.model_dump()
-        elif step_id == "regulatory_declarations":
-            form_model = await RegulatoryForm.from_request(form_dict)
-            clean_payload = form_model.model_dump()
-        elif step_id == "financial_profile":
-            form_model = await FinancialForm.from_request(form_dict)
-            clean_payload = form_model.model_dump()
-        else:
-            raise HTTPException(status_code=400, detail="Mismatched input schema processing specification parameter.")
-    except Exception as validation_err:
         flow = flow_registry.get_flow(country, type)
-        step_config = flow.get_step_by_id(step_id)
+    except FlowRegistryError as err:
+        raise HTTPException(status_code=400, detail="Unsupported onboarding flow.") from err
+
+    step_config = flow.get_step_by_id(step_id)
+    if not step_config:
+        raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
+
+    try:
+        clean_payload = validate_step_payload(step_config, country, form_dict)
+    except FormValidationError as validation_err:
         return templates.TemplateResponse(
             request,
             "step.html",
@@ -147,19 +185,36 @@ async def submit_step_view(
                 "country": country,
                 "type": type,
                 "version": version,
-                "error_message": str(validation_err)
+                "error_message": str(validation_err),
+                **_progress_context(flow, step_id),
             }
         )
 
-    result = service.process_step_submission(
-        application_id=application_id,
-        country=country,
-        account_type=type,
-        step_id=step_id,
-        form_data=clean_payload,
-        current_version=version,
-        request_id=request_id
-    )
+    try:
+        result = service.process_step_submission(
+            application_id=application_id,
+            country=country,
+            account_type=type,
+            step_id=step_id,
+            form_data=clean_payload,
+            current_version=version,
+            request_id=request_id
+        )
+    except StateTransitionError as err:
+        return templates.TemplateResponse(
+            request,
+            "step.html",
+            {
+                "application_id": application_id,
+                "step": step_config,
+                "country": country,
+                "type": type,
+                "version": version,
+                "error_message": str(err),
+                **_progress_context(flow, step_id),
+            },
+            status_code=409,
+        )
     
     status_outcome = result["status"]
     next_step_id = result["next_step_id"]

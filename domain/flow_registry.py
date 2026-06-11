@@ -1,6 +1,11 @@
 from typing import Dict, Tuple
 from domain.flow import FlowConfig
 from flows.sweden_individual import sweden_individual_flow
+from flows.sweden_business import sweden_business_flow
+from flows.spain_individual import spain_individual_flow
+from flows.spain_business import spain_business_flow
+from flows.poland_individual import poland_individual_flow
+from flows.poland_business import poland_business_flow
 
 class FlowRegistryError(Exception):
     pass
@@ -24,5 +29,10 @@ class FlowRegistry:
 # Instantiated global lookup registry
 flow_registry = FlowRegistry()
 
-# Statically register the Swedish private journey
+# Statically register the supported onboarding journeys.
 flow_registry.register(sweden_individual_flow)
+flow_registry.register(sweden_business_flow)
+flow_registry.register(spain_individual_flow)
+flow_registry.register(spain_business_flow)
+flow_registry.register(poland_individual_flow)
+flow_registry.register(poland_business_flow)

@@ -47,8 +47,9 @@ sweden_individual_flow = FlowConfig(
                 ),
                 FormFieldConfig(
                     field_name="tax_residency",
-                    field_type="text",
-                    is_required=True
+                    field_type="select",
+                    is_required=True,
+                    options=["SE", "ES", "PL"]
                 )
             ],
             required_integrations=["sanctions"]
