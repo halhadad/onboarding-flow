@@ -1,0 +1,10 @@
+pydantic-settings
+pydantic
+fastapi
+uvicorn
+pytest
+pytest-asyncio
+httpx
+jinja2
+sqlalchemy
+python-multipart

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="bg-white shadow rounded-lg p-8 max-w-xl mx-auto mt-6">
+    <h2 class="text-2xl font-bold text-gray-800 mb-2">Data Audit Review</h2>
+    <p class="text-gray-600 text-sm mb-6">Verify your captured data before finalizing submission blocks.</p>
+    
+    <div class="border border-gray-200 rounded divide-y divide-gray-200 mb-6">
+        {% for step_id, data in responses.items() %}
+        <div class="p-4 bg-gray-50 flex justify-between items-start">
+            <span class="text-xs font-bold uppercase text-gray-500">{{ step_id }}</span>
+            <pre class="text-xs text-gray-700 font-mono text-right">{{ data | tojson(indent=2) }}</pre>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

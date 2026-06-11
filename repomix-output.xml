@@ -1,0 +1,1517 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+audit/log.py
+config.py
+db/models.py
+db/session.py
+docker-compose.yml
+Dockerfile
+domain/decisioning.py
+domain/entities.py
+domain/flow_registry.py
+domain/flow.py
+domain/ports.py
+domain/states.py
+domain/value_objects.py
+flows/poland_business.py
+flows/poland_individual.py
+flows/spain_business.py
+flows/spain_individual.py
+flows/sweden_business.py
+flows/sweden_individual.py
+integrations/bank_account.py
+integrations/base.py
+integrations/credit.py
+integrations/identity.py
+integrations/registry.py
+integrations/sanctions.py
+main.py
+README.md
+repositories/application_repo.py
+requirements.txt
+run.py
+services/onboarding_service.py
+services/resume_service.py
+templates/base.html
+templates/decision.html
+templates/resume.html
+templates/review.html
+templates/start.html
+templates/step.html
+web/dependencies.py
+web/forms.py
+web/middleware.py
+web/views.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".gitignore">
+.venv/
+.env
+__pycache__/
+*.db*
+</file>
+
+<file path="audit/log.py">
+import json
+import logging
+import datetime
+
+logger = logging.getLogger("banking_audit")
+logging.basicConfig(level=logging.INFO)
+
+class SecurityAuditLogger:
+    @staticmethod
+    def log_state_mutation(application_id: str, element: str, status_outcome: str, request_id: str) -> None:
+        payload = {
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "application_id": application_id,
+            "component": element,
+            "outcome": status_outcome,
+            "request_id": request_id
+        }
+        logger.info(f"[AUDIT_MUTATION] {json.dumps(payload)}")
+</file>
+
+<file path="config.py">
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    DATABASE_URL: str
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+settings = Settings()
+</file>
+
+<file path="db/models.py">
+from datetime import datetime
+import uuid
+from sqlalchemy import Column, String, Integer, DateTime, Text, UniqueConstraint, ForeignKey
+from sqlalchemy.orm import declarative_base, relationship
+
+Base = declarative_base()
+
+def generate_uuid() -> str:
+    return str(uuid.uuid4())
+
+class ApplicationRecord(Base):
+    __tablename__ = "applications"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    country = Column(String, nullable=False)
+    account_type = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="STARTED")
+    current_step_index = Column(Integer, default=0, nullable=False)
+    version = Column(Integer, default=1, nullable=False)
+    resume_token = Column(String, unique=True, index=True, nullable=True, default=generate_uuid)
+    resume_token_expires_at = Column(DateTime, nullable=True)
+    request_id = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # These relationships now have a clear join condition thanks to the ForeignKeys below
+    step_responses = relationship("StepResponseRecord", back_populates="application", cascade="all, delete-orphan")
+    integration_logs = relationship("IntegrationLogRecord", back_populates="application", cascade="all, delete-orphan")
+
+class StepResponseRecord(Base):
+    __tablename__ = "step_responses"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    
+    # FIX: Explicit ForeignKey constraint
+    application_id = Column(String, ForeignKey("applications.id"), index=True, nullable=False)
+    
+    step_id = Column(String, nullable=False)
+    form_data_json = Column(Text, nullable=False)
+    payload_hash = Column(String, nullable=False)
+    completed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    application = relationship("ApplicationRecord", back_populates="step_responses")
+
+    __table_args__ = (
+        UniqueConstraint('application_id', 'step_id', name='_app_step_uc'),
+    )
+
+class IntegrationLogRecord(Base):
+    __tablename__ = "integration_logs"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    
+    # FIX: Explicit ForeignKey constraint
+    application_id = Column(String, ForeignKey("applications.id"), index=True, nullable=False)
+    
+    service_name = Column(String, nullable=False)
+    status_outcome = Column(String, nullable=False)
+    raw_response_json = Column(Text, nullable=False)
+    request_id = Column(String, nullable=False)
+    executed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    application = relationship("ApplicationRecord", back_populates="integration_logs")
+
+    __table_args__ = (
+        UniqueConstraint('application_id', 'service_name', 'request_id', name='_app_service_request_uc'),
+    )
+</file>
+
+<file path="db/session.py">
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+from config import settings
+
+# Thread-safe engine pool configuration isolated to block circular dependency bugs
+engine = create_engine(
+    settings.DATABASE_URL,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 30
+    }
+)
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    """Guarantees strict atomic mutations by forcing transaction pools to IMMEDIATE mode."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON;")
+    dbapi_connection.isolation_level = "IMMEDIATE"
+    cursor.close()
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+</file>
+
+<file path="docker-compose.yml">
+
+</file>
+
+<file path="Dockerfile">
+
+</file>
+
+<file path="domain/decisioning.py">
+from domain.states import ApplicationStatus
+
+class AutomatedDecisionEngine:
+
+    @staticmethod
+    def evaluate_financial_risk(income: float, expenses: float, debts: float) -> ApplicationStatus:
+        disposable_income = income - expenses
+        
+        if disposable_income <= 0:
+            return ApplicationStatus.REJECTED
+            
+        debt_to_income_ratio = debts / income if income > 0 else 0
+        if debt_to_income_ratio > 0.60:
+            return ApplicationStatus.MANUAL_REVIEW
+            
+        return ApplicationStatus.APPROVED
+
+    @staticmethod
+    def evaluate_compliance_risk(tax_residency: str, is_pep: bool) -> ApplicationStatus:
+        normalized_country = tax_residency.strip().upper()
+        
+        if normalized_country in ["IR", "KP", "SY"]:
+            return ApplicationStatus.REJECTED
+            
+        if is_pep:
+            return ApplicationStatus.MANUAL_REVIEW
+            
+        return ApplicationStatus.APPROVED
+</file>
+
+<file path="domain/entities.py">
+from dataclasses import dataclass, field
+from typing import Dict, Any, List
+from domain.states import ApplicationStatus
+
+@dataclass
+class ApplicationEntity:
+    id: str
+    country: str
+    account_type: str
+    status: ApplicationStatus
+    version: int
+    responses: Dict[str, Any] = field(default_factory=dict)
+
+    def can_transition_to(self, new_status: ApplicationStatus) -> bool:
+        """
+        Enforces terminal state invariants. Once an application reaches 
+        APPROVED, REJECTED, or MANUAL_REVIEW, no further changes are permitted.
+        """
+        if self.status in [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+            return False
+        return True
+
+    def transition_status(self, new_status: ApplicationStatus) -> None:
+        if not self.can_transition_to(new_status):
+            raise RuntimeError(f"Cannot transition application from terminal state {self.status} to {new_status}")
+        self.status = new_status
+</file>
+
+<file path="domain/flow_registry.py">
+from typing import Dict, Tuple
+from domain.flow import FlowConfig
+from flows.sweden_individual import sweden_individual_flow
+
+class FlowRegistryError(Exception):
+    pass
+
+class FlowRegistry:
+    def __init__(self):
+        self._registry: Dict[Tuple[str, str], FlowConfig] = {}
+
+    def register(self, flow: FlowConfig) -> None:
+        key = (flow.country.upper(), flow.account_type.lower())
+        self._registry[key] = flow
+
+    def get_flow(self, country: str, account_type: str) -> FlowConfig:
+        key = (country.upper(), account_type.lower())
+        if key not in self._registry:
+            raise FlowRegistryError(
+                f"No flow configured for country {country} and account type {account_type}"
+            )
+        return self._registry[key]
+
+# Instantiated global lookup registry
+flow_registry = FlowRegistry()
+
+# Statically register the Swedish private journey
+flow_registry.register(sweden_individual_flow)
+</file>
+
+<file path="domain/flow.py">
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+
+@dataclass(frozen=True)
+class FormFieldConfig:
+    field_name: str
+    field_type: str  # text, number, select, boolean
+    is_required: bool
+    options: List[str] = field(default_factory=list)
+
+@dataclass(frozen=True)
+class FlowStep:
+    step_id: str
+    title: str
+    description: str
+    fields: List[FormFieldConfig]
+    required_integrations: List[str] = field(default_factory=list)
+
+@dataclass(frozen=True)
+class FlowConfig:
+    country: str
+    account_type: str
+    steps: List[FlowStep]
+
+    def get_step_by_id(self, step_id: str) -> Optional[FlowStep]:
+        for step in self.steps:
+            if step.step_id == step_id:
+                return step
+        return None
+
+    def get_next_step_id(self, current_step_id: str) -> Optional[str]:
+        for i, step in enumerate(self.steps):
+            if step.step_id == current_step_id:
+                if i + 1 < len(self.steps):
+                    return self.steps[i + 1].step_id
+                return None
+        return None
+</file>
+
+<file path="domain/ports.py">
+from abc import ABC, abstractmethod
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class IntegrationResult:
+    status_outcome: str  # APPROVED, MANUAL_REVIEW, REJECTED
+    raw_response_json: str
+
+class ApplicationRepository(ABC):
+
+    @abstractmethod
+    def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> None:
+        """Initializes a new application record in the system."""
+        pass
+
+    @abstractmethod
+    def get_application_status(self, application_id: str) -> Optional[str]:
+        """Retrieves the current status string of an application."""
+        pass
+
+    @abstractmethod
+    def update_application_status(self, application_id: str, status: str, current_version: int) -> None:
+        """Updates the application status utilizing optimistic concurrency control."""
+        pass
+
+    @abstractmethod
+    def save_step_response(self, application_id: str, step_id: str, form_data: Dict[str, Any], payload_hash: str) -> None:
+        """Saves or overwrites a step form payload atomically to guarantee step-level idempotency."""
+        pass
+
+    @abstractmethod
+    def get_step_response(self, application_id: str, step_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a previously saved step response payload."""
+        pass
+
+    @abstractmethod
+    def log_integration_check(self, application_id: str, service_name: str, status_outcome: str, response_json: str, request_id: str) -> None:
+        """Appends an execution log record to the immutable audit ledger."""
+        pass
+
+
+class IdentityVerificationService(ABC):
+    @abstractmethod
+    def verify(self, personal_identity_number: str) -> IntegrationResult:
+        """Executes a country-specific identity or national registry check verification."""
+        pass
+
+class SanctionsCheckService(ABC):
+    @abstractmethod
+    def check(self, tax_residency: str, is_pep: bool) -> IntegrationResult:
+        """Executes compliance, tax residency, and Politically Exposed Person validations."""
+        pass
+
+class CreditBureauService(ABC):
+    @abstractmethod
+    def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> IntegrationResult:
+        """Evaluates financial risk profile parameters and affordability logic."""
+        pass
+</file>
+
+<file path="domain/states.py">
+from enum import Enum
+
+class ApplicationStatus(str, Enum):
+    STARTED = "STARTED"
+    IN_PROGRESS = "IN_PROGRESS"
+    APPROVED = "APPROVED"
+    MANUAL_REVIEW = "MANUAL_REVIEW"
+    REJECTED = "REJECTED"
+</file>
+
+<file path="domain/value_objects.py">
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class PayloadSignature:
+    hash_value: str
+
+    def __post_init__(self) -> None:
+        if not self.hash_value or len(self.hash_value) != 64:
+            raise ValueError("Payload signature must be a valid 64-character SHA-256 hex string.")
+</file>
+
+<file path="flows/poland_business.py">
+
+</file>
+
+<file path="flows/poland_individual.py">
+
+</file>
+
+<file path="flows/spain_business.py">
+
+</file>
+
+<file path="flows/spain_individual.py">
+
+</file>
+
+<file path="flows/sweden_business.py">
+
+</file>
+
+<file path="flows/sweden_individual.py">
+from domain.flow import FlowConfig, FlowStep, FormFieldConfig
+
+sweden_individual_flow = FlowConfig(
+    country="SWEDEN",
+    account_type="private",
+    steps=[
+        FlowStep(
+            step_id="collect_identity",
+            title="Identity Verification",
+            description="Please enter your Swedish personal identity number to initiate verification via BankID.",
+            fields=[
+                FormFieldConfig(
+                    field_name="personal_identity_number",
+                    field_type="text",
+                    is_required=True
+                )
+            ],
+            required_integrations=["identity"]
+        ),
+        FlowStep(
+            step_id="confirm_contact",
+            title="Contact Details",
+            description="Verify your current residential address and telephone information.",
+            fields=[
+                FormFieldConfig(
+                    field_name="address",
+                    field_type="text",
+                    is_required=True
+                ),
+                FormFieldConfig(
+                    field_name="phone_number",
+                    field_type="text",
+                    is_required=True
+                )
+            ],
+            required_integrations=["address_lookup"]
+        ),
+        FlowStep(
+            step_id="regulatory_declarations",
+            title="Regulatory Declarations",
+            description="Provide necessary compliance, tax residency, and Politically Exposed Person status declarations.",
+            fields=[
+                FormFieldConfig(
+                    field_name="is_pep",
+                    field_type="boolean",
+                    is_required=True
+                ),
+                FormFieldConfig(
+                    field_name="tax_residency",
+                    field_type="text",
+                    is_required=True
+                )
+            ],
+            required_integrations=["sanctions"]
+        ),
+        FlowStep(
+            step_id="financial_profile",
+            title="Financial Profile",
+            description="Please provide details regarding your monthly employment income, expenses, and outstanding liabilities.",
+            fields=[
+                FormFieldConfig(
+                    field_name="monthly_income",
+                    field_type="number",
+                    is_required=True
+                ),
+                FormFieldConfig(
+                    field_name="monthly_expenses",
+                    field_type="number",
+                    is_required=True
+                ),
+                FormFieldConfig(
+                    field_name="outstanding_debts",
+                    field_type="number",
+                    is_required=True
+                )
+            ],
+            required_integrations=["credit_bureau"]
+        )
+    ]
+)
+</file>
+
+<file path="integrations/bank_account.py">
+import json
+from domain.ports import IntegrationResult
+
+class MockBankAccountService:
+    def validate_account(self, routing_number: str, account_number: str) -> IntegrationResult:
+        if routing_number.strip() == "9999":
+            return IntegrationResult(status_outcome="REJECTED", raw_response_json=json.dumps({"error": "INVALID_BIC"}))
+        return IntegrationResult(status_outcome="APPROVED", raw_response_json=json.dumps({"status": "VALIDATED"}))
+</file>
+
+<file path="integrations/base.py">
+
+</file>
+
+<file path="integrations/credit.py">
+import json
+from domain.ports import CreditBureauService, IntegrationResult
+
+class MockCreditBureauService(CreditBureauService):
+
+    def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> IntegrationResult:
+        disposable_income = monthly_income - monthly_expenses
+        
+        # Immediate rejection if the basic net household balance is underwater
+        if disposable_income <= 0:
+            payload = {"disposable_income": disposable_income, "debt_flags": ["NEGATIVE_SURPLUS"], "score": 310}
+            return IntegrationResult(
+                status_outcome="REJECTED",
+                raw_response_json=json.dumps(payload)
+            )
+
+        # Calculate a basic debt-to-income metric
+        debt_to_income_ratio = outstanding_debts / monthly_income if monthly_income > 0 else 0
+
+        if debt_to_income_ratio > 0.60:
+            payload = {"disposable_income": disposable_income, "debt_flags": ["HIGH_LEVERAGE_RISK"], "score": 480}
+            return IntegrationResult(
+                status_outcome="MANUAL_REVIEW",
+                raw_response_json=json.dumps(payload)
+            )
+
+        payload = {"disposable_income": disposable_income, "debt_flags": [], "score": 780}
+        return IntegrationResult(
+            status_outcome="APPROVED",
+            raw_response_json=json.dumps(payload)
+        )
+</file>
+
+<file path="integrations/identity.py">
+import json
+from domain.ports import IdentityVerificationService, IntegrationResult
+
+class MockIdentityVerificationService(IdentityVerificationService):
+
+    def verify(self, personal_identity_number: str) -> IntegrationResult:
+        clean_pin = personal_identity_number.strip()
+
+        # Deterministic simulation rules based on input patterns
+        if "0000" in clean_pin:
+            payload = {"error": "Document reference not found in national registry", "code": "EXPIRED_ID"}
+            return IntegrationResult(
+                status_outcome="REJECTED",
+                raw_response_json=json.dumps(payload)
+            )
+        
+        if "1111" in clean_pin:
+            payload = {"verification_status": "ambiguous_match", "confidence_score": 0.62}
+            return IntegrationResult(
+                status_outcome="MANUAL_REVIEW",
+                raw_response_json=json.dumps(payload)
+            )
+
+        payload = {"verification_status": "verified", "confidence_score": 0.99, "registry_match": True}
+        return IntegrationResult(
+            status_outcome="APPROVED",
+            raw_response_json=json.dumps(payload)
+        )
+</file>
+
+<file path="integrations/registry.py">
+import json
+from domain.ports import IntegrationResult
+
+class MockRegistryService:
+    def lookup_entity(self, tax_id: str) -> IntegrationResult:
+        if tax_id.startswith("00"):
+            return IntegrationResult(status_outcome="REJECTED", raw_response_json=json.dumps({"registry": "NOT_FOUND"}))
+        return IntegrationResult(status_outcome="APPROVED", raw_response_json=json.dumps({"registry": "MATCHED"}))
+</file>
+
+<file path="integrations/sanctions.py">
+import json
+from domain.ports import SanctionsCheckService, IntegrationResult
+
+class MockSanctionsCheckService(SanctionsCheckService):
+
+    def check(self, tax_residency: str, is_pep: bool) -> IntegrationResult:
+        clean_residency = tax_residency.strip().upper()
+
+        if clean_residency in ["IR", "KP", "SY"]:
+            payload = {"blacklist_match": True, "country_code": clean_residency, "restriction_type": "FATF_PROHIBITED"}
+            return IntegrationResult(
+                status_outcome="REJECTED",
+                raw_response_json=json.dumps(payload)
+            )
+
+        if is_pep:
+            payload = {"watchlist_match": "possible_hit", "entity_type": "PEP_DOMESTIC", "requires_clerical_signoff": True}
+            return IntegrationResult(
+                status_outcome="MANUAL_REVIEW",
+                raw_response_json=json.dumps(payload)
+            )
+
+        payload = {"watchlist_match": "no_hit", "aml_clearance": True}
+        return IntegrationResult(
+            status_outcome="APPROVED",
+            raw_response_json=json.dumps(payload)
+        )
+</file>
+
+<file path="main.py">
+import db.models
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.templating import Jinja2Templates
+from db.session import engine 
+from repositories.application_repo import ConcurrentModificationError
+from web.middleware import BankingSecurityAuditMiddleware
+from web.views import router as web_router
+
+templates = Jinja2Templates(directory="templates")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handles the transactional ledger generation and engages Write-Ahead Logging."""
+    db.models.Base.metadata.create_all(bind=engine)
+    with engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA journal_mode=WAL;")
+        connection.exec_driver_sql("PRAGMA synchronous=NORMAL;")
+    print("Database connection pools online. WAL capability configured without circular imports.")
+    yield
+    engine.dispose()
+
+app = FastAPI(
+    title="Ikano Onboarding Core Platform",
+    lifespan=lifespan
+)
+
+app.add_middleware(BankingSecurityAuditMiddleware)
+
+@app.exception_handler(ConcurrentModificationError)
+async def concurrent_modification_exception_handler(request: Request, exc: ConcurrentModificationError):
+    """Gracefully intercepts double-submission collisions at the UI boundary."""
+    return templates.TemplateResponse(
+        request,
+        "step.html",
+        {
+            "error_message": "State conflict detected. It appears you have updated this session in another window.",
+            "application_id": request.path_params.get("application_id", ""),
+            "country": request.query_params.get("country", "SWEDEN"),
+            "type": request.query_params.get("type", "private"),
+            "version": int(request.query_params.get("version", 1)),
+            "step": None
+        },
+        status_code=409
+    )
+
+app.include_router(web_router)
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "engine": "SQLite WAL"}
+</file>
+
+<file path="README.md">
+
+</file>
+
+<file path="repositories/application_repo.py">
+import json
+from typing import Dict, Any, Optional, cast
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from domain.ports import ApplicationRepository
+from db.models import ApplicationRecord, StepResponseRecord, IntegrationLogRecord
+
+class ConcurrentModificationError(Exception):
+    """Raised when an optimistic concurrency version check fails."""
+    pass
+
+class SQLAlchemyApplicationRepository(ApplicationRepository):
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> None:
+        record = ApplicationRecord(
+            id=application_id,
+            country=country.upper(),
+            account_type=account_type.lower(),
+            status="STARTED",
+            version=1,
+            request_id=request_id 
+        )
+        try:
+            self.session.add(record)
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            # Explicitly expunge the failed object from session memory
+            self.session.expunge_all() 
+            raise ValueError(f"Application session with ID {application_id} already exists.")
+
+    def get_application_status(self, application_id: str) -> Optional[str]:
+        record: Any = self.session.query(ApplicationRecord).filter(ApplicationRecord.id == application_id).first()
+        return cast(Optional[str], record.status) if record else None
+
+    def update_application_status(self, application_id: str, status: str, current_version: int) -> None:
+        updated_rows = self.session.query(ApplicationRecord).filter(
+            ApplicationRecord.id == application_id,
+            ApplicationRecord.version == current_version
+        ).update(
+            {
+                ApplicationRecord.status: status,
+                ApplicationRecord.version: ApplicationRecord.version + 1
+            },
+            synchronize_session=False
+        )
+
+        if updated_rows == 0:
+            self.session.rollback()
+            raise ConcurrentModificationError(
+                f"Conflict detected. Application {application_id} was modified by another parallel transaction process."
+            )
+        
+        self.session.commit()
+
+    def save_step_response(self, application_id: str, step_id: str, form_data: Dict[str, Any], payload_hash: str) -> None:
+        serialized_data = json.dumps(form_data, sort_keys=True)
+        record: Any = self.session.query(StepResponseRecord).filter(
+            StepResponseRecord.application_id == application_id,
+            StepResponseRecord.step_id == step_id
+        ).first()
+
+        if record:
+            record.form_data_json = serialized_data
+            record.payload_hash = payload_hash
+        else:
+            new_record = StepResponseRecord(
+                application_id=application_id,
+                step_id=step_id,
+                form_data_json=serialized_data,
+                payload_hash=payload_hash
+            )
+            self.session.add(new_record)
+
+        try:
+            self.session.commit()
+        except IntegrityError as err:
+            self.session.rollback()
+            raise ConcurrentModificationError(
+                f"Idempotency lock triggered. Step {step_id} response is currently processing under an alternative thread environment."
+            ) from err
+
+    def get_step_response(self, application_id: str, step_id: str) -> Optional[Dict[str, Any]]:
+        record: Any = self.session.query(StepResponseRecord).filter(
+            StepResponseRecord.application_id == application_id,
+            StepResponseRecord.step_id == step_id
+        ).first()
+        
+        if record:
+            return {
+                "form_data": json.loads(record.form_data_json),
+                "payload_hash": record.payload_hash
+            }
+        return None
+
+    def log_integration_check(self, application_id: str, service_name: str, status_outcome: str, response_json: str, request_id: str) -> None:
+        log_entry = IntegrationLogRecord(
+            application_id=application_id,
+            service_name=service_name,
+            status_outcome=status_outcome,
+            raw_response_json=response_json,
+            request_id=request_id
+        )
+        try:
+            self.session.add(log_entry)
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+</file>
+
+<file path="requirements.txt">
+pydantic-settings
+pydantic
+fastapi
+uvicorn
+pytest
+pytest-asyncio
+httpx
+jinja2
+sqlalchemy
+python-multipart
+</file>
+
+<file path="run.py">
+
+</file>
+
+<file path="services/onboarding_service.py">
+import json
+import hashlib
+from typing import Dict, Any, Optional
+from domain.ports import (
+    ApplicationRepository, 
+    IdentityVerificationService, 
+    SanctionsCheckService, 
+    CreditBureauService
+)
+from domain.flow_registry import flow_registry
+from domain.entities import ApplicationEntity
+from domain.states import ApplicationStatus
+from domain.decisioning import AutomatedDecisionEngine
+
+class OnboardingService:
+    def __init__(
+        self,
+        repository: ApplicationRepository,
+        identity_service: IdentityVerificationService,
+        sanctions_service: SanctionsCheckService,
+        credit_service: CreditBureauService
+    ):
+        self.repository = repository
+        self.identity_service = identity_service
+        self.sanctions_service = sanctions_service
+        self.credit_service = credit_service
+
+    def _generate_payload_hash(self, form_data: Dict[str, Any]) -> str:
+        """Generates a reproducible hash of form responses to check if input values changed."""
+        serialized = json.dumps(form_data, sort_keys=True)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def process_step_submission(
+        self,
+        application_id: str,
+        country: str,
+        account_type: str,
+        step_id: str,
+        form_data: Dict[str, Any],
+        current_version: int,
+        request_id: str
+    ) -> Dict[str, Any]:
+        """
+        Orchestrates step progression logic using pure domain models. Reconstructs the application entity,
+        evaluates risk matrices via the automated decision engine, and tracks concurrency protection.
+        """
+        flow = flow_registry.get_flow(country, account_type)
+        step_config = flow.get_step_by_id(step_id)
+        if not step_config:
+            raise ValueError(f"Step {step_id} does not map to this specific application configuration workflow.")
+
+        # Reconstruct the application model state cleanly from historical records
+        current_status_str = self.repository.get_application_status(application_id) or "STARTED"
+        application = ApplicationEntity(
+            id=application_id,
+            country=country,
+            account_type=account_type,
+            status=ApplicationStatus(current_status_str),
+            version=current_version
+        )
+
+        existing_response = self.repository.get_step_response(application_id, step_id)
+        current_hash = self._generate_payload_hash(form_data)
+        
+        if existing_response and existing_response.get("payload_hash") == current_hash:
+            next_step_id = flow.get_next_step_id(step_id)
+            return {"status": application.status.value, "next_step_id": next_step_id}
+
+        # Evaluate platform integrations
+        for integration in step_config.required_integrations:
+            if integration == "identity":
+                pin = form_data.get("personal_identity_number", "")
+                result = self.identity_service.verify(pin)
+                self.repository.log_integration_check(
+                    application_id, "identity", result.status_outcome, result.raw_response_json, request_id
+                )
+                
+                if result.status_outcome in ["REJECTED", "MANUAL_REVIEW"]:
+                    new_status = ApplicationStatus(result.status_outcome)
+                    application.transition_status(new_status)
+                    self.repository.update_application_status(application.id, application.status.value, application.version)
+                    return {"status": application.status.value, "next_step_id": None}
+
+            elif integration == "address_lookup":
+                # FIX: Gracefully process or log address checks instead of letting it drop through unhandled
+                mock_json = json.dumps({"address": form_data.get("address"), "status": "FETCHED"})
+                self.repository.log_integration_check(
+                    application_id, "address_lookup", "APPROVED", mock_json, request_id
+                )
+
+            elif integration == "sanctions":
+                is_pep = str(form_data.get("is_pep", "")).lower() == "true"
+                tax_residency = form_data.get("tax_residency", "")
+                
+                decision_outcome = AutomatedDecisionEngine.evaluate_compliance_risk(tax_residency, is_pep)
+                mock_json = json.dumps({"tax_residency": tax_residency, "is_pep": is_pep, "outcome": decision_outcome.value})
+                self.repository.log_integration_check(
+                    application_id, "sanctions", decision_outcome.value, mock_json, request_id
+                )
+                
+                if decision_outcome in [ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+                    application.transition_status(decision_outcome)
+                    self.repository.update_application_status(application.id, application.status.value, application.version)
+                    return {"status": application.status.value, "next_step_id": None}
+
+            elif integration == "credit_bureau":
+                income = float(form_data.get("monthly_income", 0))
+                expenses = float(form_data.get("monthly_expenses", 0))
+                debts = float(form_data.get("outstanding_debts", 0))
+                
+                decision_outcome = AutomatedDecisionEngine.evaluate_financial_risk(income, expenses, debts)
+                mock_json = json.dumps({"income": income, "expenses": expenses, "debts": debts, "outcome": decision_outcome.value})
+                self.repository.log_integration_check(
+                    application_id, "credit_bureau", decision_outcome.value, mock_json, request_id
+                )
+                
+                application.transition_status(decision_outcome)
+                self.repository.update_application_status(application.id, application.status.value, application.version)
+                return {"status": application.status.value, "next_step_id": None}
+
+        # Commit payload response
+        self.repository.save_step_response(application_id, step_id, form_data, current_hash)
+        
+        # Calculate step routing transition parameters
+        next_step_id = flow.get_next_step_id(step_id)
+        if next_step_id is None:
+            application.transition_status(ApplicationStatus.APPROVED)
+        else:
+            application.transition_status(ApplicationStatus.IN_PROGRESS)
+
+        # FIX: Enforce systemic transaction level state version increments on EVERY step execution boundary pass
+        self.repository.update_application_status(application.id, application.status.value, application.version)
+        return {"status": application.status.value, "next_step_id": next_step_id}
+</file>
+
+<file path="services/resume_service.py">
+from typing import Dict, Any
+from domain.ports import ApplicationRepository
+from domain.flow_registry import flow_registry
+from domain.states import ApplicationStatus
+
+class ResumeApplicationError(Exception):
+    pass
+
+class ResumeService:
+    def __init__(self, repository: ApplicationRepository):
+        self.repository = repository
+
+    def resume_session(self, application_id: str, country: str, account_type: str) -> Dict[str, Any]:
+        """
+        Calculates the operational state of an incomplete onboarding session.
+        Determines the exact step to resume by scanning step-level answers.
+        """
+        current_status_str = self.repository.get_application_status(application_id)
+        if not current_status_str:
+            raise ResumeApplicationError(f"No active session found matching ID: {application_id}")
+
+        status = ApplicationStatus(current_status_str)
+
+        # Enforce state rules: Terminal statuses cannot mutate or resume
+        if status in [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+            raise ResumeApplicationError(
+                f"Cannot resume session because application has reached a terminal state: {status.value}"
+            )
+
+        flow = flow_registry.get_flow(country, account_type)
+        
+        resume_step_id = flow.steps[0].step_id
+        completed_steps_count = 0
+
+        for step in flow.steps:
+            existing_response = self.repository.get_step_response(application_id, step.step_id)
+            if existing_response:
+                completed_steps_count += 1
+                next_step_id = flow.get_next_step_id(step.step_id)
+                if next_step_id:
+                    resume_step_id = next_step_id
+            else:
+                resume_step_id = step.step_id
+                break
+
+        return {
+            "application_id": application_id,
+            "next_step_id": resume_step_id,
+            "current_version": completed_steps_count + 1,
+            "status": status.value
+        }
+</file>
+
+<file path="templates/base.html">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bank Onboarding Core Platform</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans min-h-screen flex flex-col">
+    <header class="bg-blue-900 text-white shadow-md py-4 px-6">
+        <div class="max-w-4xl mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold tracking-wide">IKANO BANK</h1>
+            <span class="text-sm bg-blue-800 px-3 py-1 rounded text-blue-200">Secure Onboarding Engine</span>
+        </div>
+    </header>
+    <main class="flex-grow max-w-4xl w-full mx-auto p-6">
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="bg-gray-100 border-t border-gray-200 py-4 text-center text-xs text-gray-500">
+        &copy; 2026 Ikano Bank. All transactions are secure and encrypted.
+    </footer>
+</body>
+</html>
+</file>
+
+<file path="templates/decision.html">
+{% extends "base.html" %}
+{% block content %}
+<div class="bg-white shadow rounded-lg p-12 max-w-md mx-auto text-center mt-12">
+    {% if status == 'APPROVED' %}
+        <div class="h-16 w-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto text-3xl font-bold mb-4">&checkmark;</div>
+        <h2 class="text-2xl font-bold text-gray-800 mb-2">Application Approved</h2>
+        <p class="text-gray-600 text-sm">Your secure onboarding configuration has successfully matched our risk matrices. Welcome to Ikano Bank.</p>
+    {% elif status == 'REJECTED' %}
+        <div class="h-16 w-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto text-3xl font-bold mb-4">&times;</div>
+        <h2 class="text-2xl font-bold text-gray-800 mb-2">Application Declined</h2>
+        <p class="text-gray-600 text-sm">Our automated risk verification parameters cannot approve this file configuration submission at this time.</p>
+    {% elif status == 'MANUAL_REVIEW' %}
+        <div class="h-16 w-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mx-auto text-3xl font-bold mb-4">!</div>
+        <h2 class="text-2xl font-bold text-gray-800 mb-2">Under Manual Verification</h2>
+        <p class="text-gray-600 text-sm">Your details have been cleanly logged to our internal compliance queues. A credit officer will inspect your parameters shortly.</p>
+    {% endif %}
+    <a href="/" class="inline-block mt-8 text-sm font-semibold text-blue-600 hover:text-blue-800">&larr; Return to Central Hub</a>
+</div>
+{% endblock %}
+</file>
+
+<file path="templates/resume.html">
+{% extends "base.html" %}
+{% block content %}
+<div class="bg-white shadow rounded-lg p-8 max-w-md mx-auto mt-12">
+    <h2 class="text-2xl font-bold text-gray-800 mb-2">Resume Session</h2>
+    <p class="text-gray-600 text-sm mb-6">Enter your global application identification signature reference string.</p>
+    
+    <form action="/application/resume" method="POST" class="space-y-4">
+        <div>
+            <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Application ID Reference</label>
+            <input type="text" name="application_id" required placeholder="uuid-v4 string pattern" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none">
+        </div>
+        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold p-3 rounded shadow transition-colors">
+            Verify & Fetch Session
+        </button>
+    </form>
+</div>
+{% endblock %}
+</file>
+
+<file path="templates/review.html">
+{% extends "base.html" %}
+{% block content %}
+<div class="bg-white shadow rounded-lg p-8 max-w-xl mx-auto mt-6">
+    <h2 class="text-2xl font-bold text-gray-800 mb-2">Data Audit Review</h2>
+    <p class="text-gray-600 text-sm mb-6">Verify your captured data before finalizing submission blocks.</p>
+    
+    <div class="border border-gray-200 rounded divide-y divide-gray-200 mb-6">
+        {% for step_id, data in responses.items() %}
+        <div class="p-4 bg-gray-50 flex justify-between items-start">
+            <span class="text-xs font-bold uppercase text-gray-500">{{ step_id }}</span>
+            <pre class="text-xs text-gray-700 font-mono text-right">{{ data | tojson(indent=2) }}</pre>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+</file>
+
+<file path="templates/start.html">
+{% extends "base.html" %}
+{% block content %}
+<div class="bg-white shadow rounded-lg p-8 max-w-md mx-auto mt-12">
+    <h2 class="text-2xl font-bold text-gray-800 mb-2">Begin Application</h2>
+    <p class="text-gray-600 text-sm mb-6">Select your regulatory jurisdiction and entity model structure.</p>
+    
+    <form action="/application/start" method="POST" class="space-y-4">
+        <div>
+            <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Country Jurisdiction</label>
+            <select name="country" class="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                <option value="SWEDEN">Sweden (BankID enabled)</option>
+                <option value="SPAIN">Spain (Asynchronous Registry fallback)</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Account Type Profile</label>
+            <select name="account_type" class="w-full border border-gray-300 rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none">
+                <option value="private">Private Individual</option>
+            </select>
+        </div>
+        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold p-3 rounded shadow transition-colors">
+            Initialize Journey
+        </button>
+    </form>
+</div>
+{% endblock %}
+</file>
+
+<file path="templates/step.html">
+{% extends "base.html" %}
+{% block content %}
+<div class="bg-white shadow rounded-lg p-8 max-w-xl mx-auto mt-6">
+    <div class="mb-6 border-b border-gray-100 pb-4">
+        <span class="text-xs font-bold text-blue-600 tracking-widest uppercase">{{ country }} &middot; {{ type }}</span>
+        <h2 class="text-2xl font-bold text-gray-800 mt-1">{{ step.title }}</h2>
+        <p class="text-gray-600 text-sm mt-1">{{ step.description }}</p>
+    </div>
+
+    {% if error_message %}
+    <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded text-sm text-red-700">
+        <strong>Validation Error:</strong> {{ error_message }}
+    </div>
+    {% endif %}
+
+    <form action="/application/{{ application_id }}/step/{{ step.step_id }}" method="POST" class="space-y-6">
+        <input type="hidden" name="country" value="{{ country }}">
+        <input type="hidden" name="type" value="{{ type }}">
+        <input type="hidden" name="version" value="{{ version }}">
+
+        {% for field in step.fields %}
+        <div>
+            <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">
+                {{ field.field_name | replace('_', ' ') }}
+                {% if field.is_required %}<span class="text-red-500">*</span>{% endif %}
+            </label>
+            
+            {% if field.field_type == 'text' %}
+                <input type="text" name="{{ field.field_name }}" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none" {% if field.is_required %}required{% endif %}>
+            {% elif field.field_type == 'number' %}
+                <input type="number" step="any" name="{{ field.field_name }}" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none" {% if field.is_required %}required{% endif %}>
+            {% elif field.field_type == 'boolean' %}
+                <div class="flex items-center space-x-3 mt-1">
+                    <input type="checkbox" name="{{ field.field_name }}" value="true" class="h-4 w-4 border-gray-300 rounded text-blue-600 focus:ring-blue-500">
+                    <span class="text-sm text-gray-600">Confirm confirmation parameter signature</span>
+                </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        <div class="pt-4 border-t border-gray-100 flex justify-between items-center">
+            <span class="text-xs text-gray-400">Transaction State Version: {{ version }}</span>
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded shadow transition-colors">
+                Continue Next Step &rarr;
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+</file>
+
+<file path="web/dependencies.py">
+from typing import Generator
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from db.session import engine, SessionLocal  # FIX: Import from database layer instead of main
+from repositories.application_repo import SQLAlchemyApplicationRepository
+from integrations.identity import MockIdentityVerificationService
+from integrations.sanctions import MockSanctionsCheckService
+from integrations.credit import MockCreditBureauService
+from services.onboarding_service import OnboardingService
+
+def get_db_session() -> Generator[Session, None, None]:
+    """Ensures clean transaction session close teardowns per query frame."""
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+def get_application_repository(session: Session = Depends(get_db_session)) -> SQLAlchemyApplicationRepository:
+    return SQLAlchemyApplicationRepository(session=session)
+
+def get_onboarding_service(
+    repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
+) -> OnboardingService:
+    return OnboardingService(
+        repository=repository,
+        identity_service=MockIdentityVerificationService(),
+        sanctions_service=MockSanctionsCheckService(),
+        credit_service=MockCreditBureauService()
+    )
+</file>
+
+<file path="web/forms.py">
+from pydantic import BaseModel, Field, field_validator
+from typing import Dict, Any
+
+class IdentityForm(BaseModel):
+    personal_identity_number: str = Field(..., min_length=1, max_length=30)
+
+    @field_validator("personal_identity_number")
+    @classmethod
+    def clean_pin(cls, value: str) -> str:
+        # Strip structural hyphens or whitespaces standard in user text entry
+        return value.replace("-", "").replace(" ", "").strip()
+
+    @classmethod
+    async def from_request(cls, request_form: Dict[str, Any]) -> "IdentityForm":
+        return cls(personal_identity_number=request_form.get("personal_identity_number", ""))
+
+
+class ContactForm(BaseModel):
+    address: str = Field(..., min_length=5, max_length=255)
+    phone_number: str = Field(..., min_length=5, max_length=30)
+
+    @classmethod
+    async def from_request(cls, request_form: Dict[str, Any]) -> "ContactForm":
+        return cls(
+            address=request_form.get("address", ""),
+            phone_number=request_form.get("phone_number", "")
+        )
+
+
+class RegulatoryForm(BaseModel):
+    is_pep: bool
+    tax_residency: str = Field(..., min_length=2, max_length=50)
+
+    @classmethod
+    async def from_request(cls, request_form: Dict[str, Any]) -> "RegulatoryForm":
+        # Convert checkbox or standard HTML selection strings into a clean boolean value
+        raw_pep = request_form.get("is_pep", "false").lower()
+        is_pep_bool = raw_pep in ["true", "on", "yes", "1"]
+        
+        return cls(
+            is_pep=is_pep_bool,
+            tax_residency=request_form.get("tax_residency", "")
+        )
+
+
+class FinancialForm(BaseModel):
+    monthly_income: float = Field(..., ge=0)
+    monthly_expenses: float = Field(..., ge=0)
+    outstanding_debts: float = Field(..., ge=0)
+
+    @classmethod
+    async def from_request(cls, request_form: Dict[str, Any]) -> "FinancialForm":
+        # Handle empty string inputs gracefully by casting them safely to zero
+        def safe_float(val: Any) -> float:
+            if not val or str(val).strip() == "":
+                return 0.0
+            try:
+                return float(val)
+            except ValueError:
+                raise ValueError("Value must be a valid numerical figure.")
+
+        return cls(
+            monthly_income=safe_float(request_form.get("monthly_income")),
+            monthly_expenses=safe_float(request_form.get("monthly_expenses")),
+            outstanding_debts=safe_float(request_form.get("outstanding_debts"))
+        )
+</file>
+
+<file path="web/middleware.py">
+import uuid
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+class BankingSecurityAuditMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Ensure every request has a unique audit trail ID
+        request.state.request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        
+        response = await call_next(request)
+        
+        # Attach the audit ID to the response headers for observability
+        response.headers["X-Request-ID"] = request.state.request_id
+        return response
+</file>
+
+<file path="web/views.py">
+import uuid
+from fastapi import APIRouter, Request, Depends, HTTPException, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+import db.models
+from web.dependencies import get_onboarding_service, get_application_repository
+from services.onboarding_service import OnboardingService
+from repositories.application_repo import SQLAlchemyApplicationRepository
+from web.forms import IdentityForm, ContactForm, RegulatoryForm, FinancialForm
+from domain.flow_registry import flow_registry
+from services.resume_service import ResumeService, ResumeApplicationError
+
+router = APIRouter()
+templates = Jinja2Templates(directory="templates")
+
+@router.get("/", response_class=HTMLResponse)
+async def index_view(request: Request):
+    return templates.TemplateResponse(request, "start.html")
+
+@router.get("/resume", response_class=HTMLResponse)
+async def render_resume_hub(request: Request):
+    return templates.TemplateResponse(request, "resume.html")
+
+@router.post("/application/start", response_class=RedirectResponse)
+async def start_application_view(
+    request: Request,
+    country: str = Form(...),
+    account_type: str = Form(...),
+    service: OnboardingService = Depends(get_onboarding_service)
+):
+    application_id = str(uuid.uuid4())
+    # Correctly retrieve from middleware state
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    
+    service.repository.create_application(
+        application_id=application_id,
+        country=country,
+        account_type=account_type,
+        request_id=request_id
+    )
+    
+    flow = flow_registry.get_flow(country, account_type)
+    first_step_id = flow.steps[0].step_id
+    
+    url = f"/application/{application_id}/step/{first_step_id}?country={country}&type={account_type}"
+    return RedirectResponse(url=url, status_code=303)
+
+@router.post("/application/resume", response_class=RedirectResponse)
+async def handle_resume_submission(
+    request: Request,
+    application_id: str = Form(...),
+    repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
+):
+    app_id_clean = application_id.strip()
+    app_record = repository.session.query(db.models.ApplicationRecord).filter(
+        db.models.ApplicationRecord.id == app_id_clean
+    ).first()
+    
+    if not app_record:
+        return templates.TemplateResponse(
+            request, "resume.html", {"error_message": "Invalid identification reference sequence identifier."}
+        )
+        
+    resumer = ResumeService(repository=repository)
+    try:
+        country_str = str(app_record.country)
+        account_type_str = str(app_record.account_type)
+        
+        outcome = resumer.resume_session(app_id_clean, country_str, account_type_str)
+        url = f"/application/{app_id_clean}/step/{outcome['next_step_id']}?country={country_str}&type={account_type_str}"
+        return RedirectResponse(url=url, status_code=303)
+    except ResumeApplicationError as err:
+        return templates.TemplateResponse(request, "resume.html", {"error_message": str(err)})
+
+@router.get("/application/{application_id}/step/{step_id}", response_class=HTMLResponse)
+async def render_step_view(
+    request: Request,
+    application_id: str,
+    step_id: str,
+    country: str,
+    type: str,
+    repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
+):
+    """Renders forms dynamically using state context configurations fetched from the database layer."""
+    flow = flow_registry.get_flow(country, type)
+    step_config = flow.get_step_by_id(step_id)
+    if not step_config:
+        raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
+    
+    # FIX: Always fetch the structural single source of truth version sequence straight from the database row
+    app_record = repository.session.query(db.models.ApplicationRecord).filter(
+        db.models.ApplicationRecord.id == application_id
+    ).first()
+    
+    db_version = app_record.version if app_record else 1
+        
+    return templates.TemplateResponse(
+        request,
+        "step.html",
+        {
+            "application_id": application_id,
+            "step": step_config,
+            "country": country,
+            "type": type,
+            "version": db_version
+        }
+    )
+
+@router.post("/application/{application_id}/step/{step_id}", response_class=HTMLResponse)
+async def submit_step_view(
+    request: Request,
+    application_id: str,
+    step_id: str,
+    country: str = Form(...),
+    type: str = Form(...),
+    version: int = Form(...),
+    service: OnboardingService = Depends(get_onboarding_service)
+):
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    form_data_raw = await request.form()
+    form_dict = {k: v for k, v in form_data_raw.items()}
+    
+    try:
+        if step_id == "collect_identity":
+            form_model = await IdentityForm.from_request(form_dict)
+            clean_payload = form_model.model_dump()
+        elif step_id == "confirm_contact":
+            form_model = await ContactForm.from_request(form_dict)
+            clean_payload = form_model.model_dump()
+        elif step_id == "regulatory_declarations":
+            form_model = await RegulatoryForm.from_request(form_dict)
+            clean_payload = form_model.model_dump()
+        elif step_id == "financial_profile":
+            form_model = await FinancialForm.from_request(form_dict)
+            clean_payload = form_model.model_dump()
+        else:
+            raise HTTPException(status_code=400, detail="Mismatched input schema processing specification parameter.")
+    except Exception as validation_err:
+        flow = flow_registry.get_flow(country, type)
+        step_config = flow.get_step_by_id(step_id)
+        return templates.TemplateResponse(
+            request,
+            "step.html",
+            {
+                "application_id": application_id,
+                "step": step_config,
+                "country": country,
+                "type": type,
+                "version": version,
+                "error_message": str(validation_err)
+            }
+        )
+
+    result = service.process_step_submission(
+        application_id=application_id,
+        country=country,
+        account_type=type,
+        step_id=step_id,
+        form_data=clean_payload,
+        current_version=version,
+        request_id=request_id
+    )
+    
+    status_outcome = result["status"]
+    next_step_id = result["next_step_id"]
+
+    if status_outcome in ["APPROVED", "REJECTED", "MANUAL_REVIEW"] and not next_step_id:
+        return templates.TemplateResponse(
+            request,
+            "decision.html",
+            {"status": status_outcome}
+        )
+        
+    url = f"/application/{application_id}/step/{next_step_id}?country={country}&type={type}"
+    return RedirectResponse(url=url, status_code=303)
+</file>
+
+</files>
