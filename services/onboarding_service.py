@@ -1,18 +1,20 @@
 import json
 import hashlib
 import hmac
-from typing import Dict, Any, Optional
+from typing import Callable, Dict, Any
 from config import settings
 from domain.ports import (
     ApplicationRepository, 
     IdentityVerificationService, 
     SanctionsCheckService, 
-    CreditBureauService
+    CreditBureauService,
+    RegistryLookupService,
+    BankAccountValidationService,
+    IntegrationResult,
 )
 from domain.flow_registry import flow_registry
 from domain.entities import ApplicationEntity
 from domain.states import ApplicationStatus
-from domain.decisioning import AutomatedDecisionEngine
 
 
 class StateTransitionError(Exception):
@@ -24,12 +26,27 @@ class OnboardingService:
         repository: ApplicationRepository,
         identity_service: IdentityVerificationService,
         sanctions_service: SanctionsCheckService,
-        credit_service: CreditBureauService
+        credit_service: CreditBureauService,
+        registry_service: RegistryLookupService,
+        bank_account_service: BankAccountValidationService
     ):
         self.repository = repository
         self.identity_service = identity_service
         self.sanctions_service = sanctions_service
         self.credit_service = credit_service
+        self.registry_service = registry_service
+        self.bank_account_service = bank_account_service
+        self.integration_handlers: Dict[str, Callable[[str, Dict[str, Any], str], IntegrationResult]] = {
+            "identity": self._run_identity_check,
+            "address_lookup": self._run_address_lookup,
+            "sanctions": self._run_sanctions_check,
+            "credit_bureau": self._run_credit_bureau_check,
+            "registry": self._run_registry_check,
+            "representative": self._run_representative_check,
+            "ubo_kyc": self._run_ubo_kyc_check,
+            "business_credit": self._run_business_credit_check,
+            "bank_account": self._run_bank_account_check,
+        }
 
     def _generate_payload_hash(self, form_data: Dict[str, Any]) -> str:
         """Generates a keyed digest so low-entropy identifiers are not exposed to offline guessing."""
@@ -62,6 +79,70 @@ class OnboardingService:
                 raise StateTransitionError(
                     f"Step '{step_id}' cannot be submitted before completing '{previous_step.step_id}'."
                 )
+
+    def _run_identity_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        pin = form_data.get("personal_identity_number") or form_data.get("representative_id", "")
+        return self.identity_service.verify(str(pin))
+
+    def _run_address_lookup(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        return IntegrationResult(
+            status_outcome="APPROVED",
+            raw_response_json=json.dumps({"address_confidence": 0.92, "status": "FETCHED"}),
+        )
+
+    def _run_sanctions_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        is_pep = bool(form_data.get("is_pep"))
+        tax_residency = str(form_data.get("tax_residency", ""))
+        return self.sanctions_service.check(tax_residency, is_pep)
+
+    def _run_credit_bureau_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        try:
+            income = float(form_data.get("monthly_income", 0))
+            expenses = float(form_data.get("monthly_expenses", 0))
+            debts = float(form_data.get("outstanding_debts", 0))
+        except (TypeError, ValueError) as err:
+            raise ValueError("Financial inputs must be numeric.") from err
+        return self.credit_service.evaluate(income, expenses, debts)
+
+    def _run_registry_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        return self.registry_service.lookup_entity(str(form_data.get("company_identifier", "")))
+
+    def _run_representative_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        has_authority = bool(form_data.get("has_signatory_authority"))
+        payload = {"authority": "confirmed" if has_authority else "missing_or_unconfirmed"}
+        return IntegrationResult(
+            status_outcome="APPROVED" if has_authority else "MANUAL_REVIEW",
+            raw_response_json=json.dumps(payload),
+        )
+
+    def _run_ubo_kyc_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        ubo_count = float(form_data.get("ubo_count", 0))
+        largest_ownership = float(form_data.get("largest_ownership_percent", 0))
+        if ubo_count <= 0:
+            return IntegrationResult("REJECTED", json.dumps({"ubo_status": "missing_ubo"}))
+        if largest_ownership >= 75:
+            return IntegrationResult("MANUAL_REVIEW", json.dumps({"ubo_status": "concentrated_ownership"}))
+        return IntegrationResult("APPROVED", json.dumps({"ubo_status": "verified"}))
+
+    def _run_business_credit_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        turnover = float(form_data.get("annual_turnover", 0))
+        monthly_volume = float(form_data.get("expected_monthly_volume", 0))
+        sector = str(form_data.get("sector", "")).lower()
+        if turnover <= 0:
+            outcome = ApplicationStatus.REJECTED
+            payload = {"business_credit": "no_turnover"}
+        elif sector == "financial_services" or monthly_volume > turnover:
+            outcome = ApplicationStatus.MANUAL_REVIEW
+            payload = {"business_credit": "enhanced_due_diligence"}
+        else:
+            outcome = ApplicationStatus.APPROVED
+            payload = {"business_credit": "acceptable"}
+        payload["turnover_band"] = self._money_band(turnover)
+        payload["monthly_volume_band"] = self._money_band(monthly_volume)
+        return IntegrationResult(outcome.value, json.dumps(payload))
+
+    def _run_bank_account_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        return self.bank_account_service.validate_iban(str(form_data.get("iban", "")))
 
     def process_step_submission(
         self,
@@ -109,147 +190,21 @@ class OnboardingService:
         # Persist the validated step payload before external checks so resumability and support state stay coherent.
         self.repository.save_step_response(application_id, step_id, form_data, current_hash)
 
-        # Evaluate platform integrations
+        # Evaluate platform integrations through explicit handlers so flow config stays declarative.
         for integration in step_config.required_integrations:
-            if integration == "identity":
-                pin = form_data.get("personal_identity_number") or form_data.get("representative_id", "")
-                result = self.identity_service.verify(pin)
-                self.repository.log_integration_check(
-                    application_id, "identity", result.status_outcome, result.raw_response_json, request_id
-                )
-                
-                if result.status_outcome in ["REJECTED", "MANUAL_REVIEW"]:
-                    new_status = ApplicationStatus(result.status_outcome)
-                    application.transition_status(new_status)
-                    self.repository.update_application_status(application.id, application.status.value, application.version)
-                    return {"status": application.status.value, "next_step_id": None}
+            handler = self.integration_handlers.get(integration)
+            if handler is None:
+                raise ValueError(f"No integration handler registered for '{integration}'.")
 
-            elif integration == "address_lookup":
-                # FIX: Gracefully process or log address checks instead of letting it drop through unhandled
-                mock_json = json.dumps({"address_confidence": 0.92, "status": "FETCHED"})
-                self.repository.log_integration_check(
-                    application_id, "address_lookup", "APPROVED", mock_json, request_id
-                )
+            result = handler(application_id, form_data, request_id)
+            self.repository.log_integration_check(
+                application_id, integration, result.status_outcome, result.raw_response_json, request_id
+            )
 
-            elif integration == "sanctions":
-                is_pep = str(form_data.get("is_pep", "")).lower() == "true"
-                tax_residency = form_data.get("tax_residency", "")
-                
-                decision_outcome = AutomatedDecisionEngine.evaluate_compliance_risk(tax_residency, is_pep)
-                mock_json = json.dumps({
-                    "screening_result": "possible_hit" if is_pep else "no_hit",
-                    "restricted_tax_residency": decision_outcome == ApplicationStatus.REJECTED,
-                    "outcome": decision_outcome.value,
-                })
-                self.repository.log_integration_check(
-                    application_id, "sanctions", decision_outcome.value, mock_json, request_id
-                )
-                
-                if decision_outcome in [ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
-                    application.transition_status(decision_outcome)
-                    self.repository.update_application_status(application.id, application.status.value, application.version)
-                    return {"status": application.status.value, "next_step_id": None}
-
-            elif integration == "credit_bureau":
-                try:
-                    income = float(form_data.get("monthly_income", 0))
-                    expenses = float(form_data.get("monthly_expenses", 0))
-                    debts = float(form_data.get("outstanding_debts", 0))
-                except (TypeError, ValueError) as err:
-                    raise ValueError("Financial inputs must be numeric.") from err
-                
-                decision_outcome = AutomatedDecisionEngine.evaluate_financial_risk(income, expenses, debts)
-                disposable_income = income - expenses
-                debt_to_income_ratio = debts / income if income > 0 else 0
-                mock_json = json.dumps({
-                    "income_band": self._money_band(income),
-                    "disposable_income_band": self._money_band(max(disposable_income, 0)),
-                    "high_debt_to_income": debt_to_income_ratio > 0.60,
-                    "outcome": decision_outcome.value,
-                })
-                self.repository.log_integration_check(
-                    application_id, "credit_bureau", decision_outcome.value, mock_json, request_id
-                )
-                
-                application.transition_status(decision_outcome)
+            if result.status_outcome in ["REJECTED", "MANUAL_REVIEW"]:
+                application.transition_status(ApplicationStatus(result.status_outcome))
                 self.repository.update_application_status(application.id, application.status.value, application.version)
                 return {"status": application.status.value, "next_step_id": None}
-
-            elif integration == "registry":
-                company_identifier = str(form_data.get("company_identifier", ""))
-                if company_identifier.startswith("00"):
-                    outcome = ApplicationStatus.REJECTED
-                    payload = {"registry_status": "not_found"}
-                elif company_identifier.endswith("1111"):
-                    outcome = ApplicationStatus.MANUAL_REVIEW
-                    payload = {"registry_status": "manual_review", "reason": "ambiguous_company_match"}
-                else:
-                    outcome = ApplicationStatus.APPROVED
-                    payload = {"registry_status": "active_company"}
-                self.repository.log_integration_check(application_id, "registry", outcome.value, json.dumps(payload), request_id)
-                if outcome in [ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
-                    application.transition_status(outcome)
-                    self.repository.update_application_status(application.id, application.status.value, application.version)
-                    return {"status": application.status.value, "next_step_id": None}
-
-            elif integration == "representative":
-                has_authority = bool(form_data.get("has_signatory_authority"))
-                outcome = ApplicationStatus.APPROVED if has_authority else ApplicationStatus.MANUAL_REVIEW
-                payload = {"authority": "confirmed" if has_authority else "missing_or_unconfirmed"}
-                self.repository.log_integration_check(application_id, "representative", outcome.value, json.dumps(payload), request_id)
-                if outcome == ApplicationStatus.MANUAL_REVIEW:
-                    application.transition_status(outcome)
-                    self.repository.update_application_status(application.id, application.status.value, application.version)
-                    return {"status": application.status.value, "next_step_id": None}
-
-            elif integration == "ubo_kyc":
-                ubo_count = float(form_data.get("ubo_count", 0))
-                largest_ownership = float(form_data.get("largest_ownership_percent", 0))
-                if ubo_count <= 0:
-                    outcome = ApplicationStatus.REJECTED
-                    payload = {"ubo_status": "missing_ubo"}
-                elif largest_ownership >= 75:
-                    outcome = ApplicationStatus.MANUAL_REVIEW
-                    payload = {"ubo_status": "concentrated_ownership"}
-                else:
-                    outcome = ApplicationStatus.APPROVED
-                    payload = {"ubo_status": "verified"}
-                self.repository.log_integration_check(application_id, "ubo_kyc", outcome.value, json.dumps(payload), request_id)
-                if outcome in [ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
-                    application.transition_status(outcome)
-                    self.repository.update_application_status(application.id, application.status.value, application.version)
-                    return {"status": application.status.value, "next_step_id": None}
-
-            elif integration == "business_credit":
-                turnover = float(form_data.get("annual_turnover", 0))
-                monthly_volume = float(form_data.get("expected_monthly_volume", 0))
-                sector = str(form_data.get("sector", ""))
-                if turnover <= 0:
-                    outcome = ApplicationStatus.REJECTED
-                    payload = {"business_credit": "no_turnover"}
-                elif sector == "FINANCIAL_SERVICES" or monthly_volume > turnover:
-                    outcome = ApplicationStatus.MANUAL_REVIEW
-                    payload = {"business_credit": "enhanced_due_diligence"}
-                else:
-                    outcome = ApplicationStatus.APPROVED
-                    payload = {"business_credit": "acceptable"}
-                payload["turnover_band"] = self._money_band(turnover)
-                payload["monthly_volume_band"] = self._money_band(monthly_volume)
-                self.repository.log_integration_check(application_id, "business_credit", outcome.value, json.dumps(payload), request_id)
-                if outcome in [ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
-                    application.transition_status(outcome)
-                    self.repository.update_application_status(application.id, application.status.value, application.version)
-                    return {"status": application.status.value, "next_step_id": None}
-
-            elif integration == "bank_account":
-                iban = str(form_data.get("iban", ""))
-                outcome = ApplicationStatus.MANUAL_REVIEW if iban.endswith("9999") else ApplicationStatus.APPROVED
-                payload = {"iban_status": "name_mismatch" if outcome == ApplicationStatus.MANUAL_REVIEW else "iban_verified"}
-                self.repository.log_integration_check(application_id, "bank_account", outcome.value, json.dumps(payload), request_id)
-                if outcome == ApplicationStatus.MANUAL_REVIEW:
-                    application.transition_status(outcome)
-                    self.repository.update_application_status(application.id, application.status.value, application.version)
-                    return {"status": application.status.value, "next_step_id": None}
 
         # Calculate step routing transition parameters
         next_step_id = flow.get_next_step_id(step_id)

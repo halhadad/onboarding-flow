@@ -2,6 +2,8 @@ from typing import Any, Dict, Optional
 
 from integrations.credit import MockCreditBureauService
 from integrations.identity import MockIdentityVerificationService
+from integrations.bank_account import MockBankAccountService
+from integrations.registry import MockRegistryService
 from integrations.sanctions import MockSanctionsCheckService
 import pytest
 
@@ -20,6 +22,20 @@ class InMemoryRepository:
 
     def get_application_status(self, application_id: str) -> Optional[str]:
         return self.status.get(application_id)
+
+    def get_application_version(self, application_id: str) -> Optional[int]:
+        return self.version if application_id in self.status else None
+
+    def get_application_context(self, application_id: str) -> Optional[Dict[str, Any]]:
+        if application_id not in self.status:
+            return None
+        return {
+            "id": application_id,
+            "country": "SWEDEN",
+            "account_type": "private",
+            "status": self.status[application_id],
+            "version": self.version,
+        }
 
     def update_application_status(self, application_id: str, status: str, current_version: int) -> None:
         self.status[application_id] = status
@@ -45,6 +61,8 @@ def test_business_profile_runs_bank_account_after_approved_business_credit():
         identity_service=MockIdentityVerificationService(),
         sanctions_service=MockSanctionsCheckService(),
         credit_service=MockCreditBureauService(),
+        registry_service=MockRegistryService(),
+        bank_account_service=MockBankAccountService(),
     )
 
     result = service.process_step_submission(
@@ -74,6 +92,8 @@ def test_service_rejects_step_skipping():
         identity_service=MockIdentityVerificationService(),
         sanctions_service=MockSanctionsCheckService(),
         credit_service=MockCreditBureauService(),
+        registry_service=MockRegistryService(),
+        bank_account_service=MockBankAccountService(),
     )
 
     with pytest.raises(StateTransitionError, match="cannot be submitted"):
@@ -87,6 +107,61 @@ def test_service_rejects_step_skipping():
                 "monthly_expenses": 1000.0,
                 "outstanding_debts": 0.0,
             },
+            current_version=1,
+            request_id="req-1",
+        )
+
+
+def test_service_short_circuits_idempotent_repeat_submission():
+    repository = InMemoryRepository()
+    service = OnboardingService(
+        repository=repository,
+        identity_service=MockIdentityVerificationService(),
+        sanctions_service=MockSanctionsCheckService(),
+        credit_service=MockCreditBureauService(),
+        registry_service=MockRegistryService(),
+        bank_account_service=MockBankAccountService(),
+    )
+    form_data = {"personal_identity_number": "199001011234"}
+    payload_hash = service._generate_payload_hash(form_data)
+    repository.responses[("app-1", "collect_identity")] = {
+        "form_data": {"personal_identity_number": "***1234"},
+        "payload_hash": payload_hash,
+    }
+
+    result = service.process_step_submission(
+        application_id="app-1",
+        country="SWEDEN",
+        account_type="private",
+        step_id="collect_identity",
+        form_data=form_data,
+        current_version=1,
+        request_id="req-1",
+    )
+
+    assert result == {"status": "STARTED", "next_step_id": "confirm_contact"}
+    assert repository.integration_logs == []
+
+
+def test_service_rejects_terminal_application_mutation():
+    repository = InMemoryRepository()
+    repository.status["app-1"] = "APPROVED"
+    service = OnboardingService(
+        repository=repository,
+        identity_service=MockIdentityVerificationService(),
+        sanctions_service=MockSanctionsCheckService(),
+        credit_service=MockCreditBureauService(),
+        registry_service=MockRegistryService(),
+        bank_account_service=MockBankAccountService(),
+    )
+
+    with pytest.raises(StateTransitionError, match="Terminal applications"):
+        service.process_step_submission(
+            application_id="app-1",
+            country="SWEDEN",
+            account_type="private",
+            step_id="collect_identity",
+            form_data={"personal_identity_number": "199001011234"},
             current_version=1,
             request_id="req-1",
         )

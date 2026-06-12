@@ -20,6 +20,16 @@ class ApplicationRepository(ABC):
         pass
 
     @abstractmethod
+    def get_application_version(self, application_id: str) -> Optional[int]:
+        """Retrieves the current optimistic concurrency version of an application."""
+        pass
+
+    @abstractmethod
+    def get_application_context(self, application_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves non-sensitive application routing and status metadata."""
+        pass
+
+    @abstractmethod
     def update_application_status(self, application_id: str, status: str, current_version: int) -> None:
         """Updates the application status utilizing optimistic concurrency control."""
         pass
@@ -56,4 +66,18 @@ class CreditBureauService(ABC):
     @abstractmethod
     def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> IntegrationResult:
         """Evaluates financial risk profile parameters and affordability logic."""
+        pass
+
+
+class RegistryLookupService(ABC):
+    @abstractmethod
+    def lookup_entity(self, tax_id: str) -> IntegrationResult:
+        """Looks up a legal entity in a mocked business registry."""
+        pass
+
+
+class BankAccountValidationService(ABC):
+    @abstractmethod
+    def validate_iban(self, iban: str) -> IntegrationResult:
+        """Validates a bank account identifier against a mocked bank service."""
         pass

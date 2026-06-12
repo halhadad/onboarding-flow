@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from sqlalchemy import Column, String, Integer, DateTime, Text, UniqueConstraint, ForeignKey
 from sqlalchemy.orm import declarative_base, relationship
@@ -7,6 +7,9 @@ Base = declarative_base()
 
 def generate_uuid() -> str:
     return str(uuid.uuid4())
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 class ApplicationRecord(Base):
     __tablename__ = "applications"
@@ -20,10 +23,10 @@ class ApplicationRecord(Base):
     resume_token = Column(String, unique=True, index=True, nullable=True, default=generate_uuid)
     resume_token_expires_at = Column(DateTime, nullable=True)
     request_id = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
-    # These relationships now have a clear join condition thanks to the ForeignKeys below
+    # relationships
     step_responses = relationship("StepResponseRecord", back_populates="application", cascade="all, delete-orphan")
     integration_logs = relationship("IntegrationLogRecord", back_populates="application", cascade="all, delete-orphan")
 
@@ -32,13 +35,12 @@ class StepResponseRecord(Base):
 
     id = Column(String, primary_key=True, default=generate_uuid)
     
-    # FIX: Explicit ForeignKey constraint
     application_id = Column(String, ForeignKey("applications.id"), index=True, nullable=False)
     
     step_id = Column(String, nullable=False)
     form_data_json = Column(Text, nullable=False)
     payload_hash = Column(String, nullable=False)
-    completed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, default=utc_now, nullable=False)
 
     application = relationship("ApplicationRecord", back_populates="step_responses")
 
@@ -58,7 +60,7 @@ class IntegrationLogRecord(Base):
     status_outcome = Column(String, nullable=False)
     raw_response_json = Column(Text, nullable=False)
     request_id = Column(String, nullable=False)
-    executed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    executed_at = Column(DateTime, default=utc_now, nullable=False)
 
     application = relationship("ApplicationRecord", back_populates="integration_logs")
 

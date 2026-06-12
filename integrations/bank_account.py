@@ -1,8 +1,15 @@
 import json
-from domain.ports import IntegrationResult
+from domain.ports import BankAccountValidationService, IntegrationResult
 
-class MockBankAccountService:
-    def validate_account(self, routing_number: str, account_number: str) -> IntegrationResult:
-        if routing_number.strip() == "9999":
-            return IntegrationResult(status_outcome="REJECTED", raw_response_json=json.dumps({"error": "INVALID_BIC"}))
-        return IntegrationResult(status_outcome="APPROVED", raw_response_json=json.dumps({"status": "VALIDATED"}))
+class MockBankAccountService(BankAccountValidationService):
+    def validate_iban(self, iban: str) -> IntegrationResult:
+        clean_iban = iban.replace(" ", "").upper()
+        if clean_iban.endswith("9999"):
+            return IntegrationResult(
+                status_outcome="MANUAL_REVIEW",
+                raw_response_json=json.dumps({"iban_status": "name_mismatch"}),
+            )
+        return IntegrationResult(
+            status_outcome="APPROVED",
+            raw_response_json=json.dumps({"iban_status": "iban_verified"}),
+        )

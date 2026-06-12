@@ -25,7 +25,6 @@
     <form action="/application/{{ application_id }}/step/{{ step.step_id }}" method="POST" class="space-y-6">
         <input type="hidden" name="country" value="{{ country }}">
         <input type="hidden" name="type" value="{{ type }}">
-        <input type="hidden" name="version" value="{{ version }}">
 
         {% for field in step.fields %}
         <div>
@@ -40,6 +39,7 @@
                 <input type="number" min="0" step="any" name="{{ field.field_name }}" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none" {% if field.is_required %}required{% endif %}>
             {% elif field.field_type == 'select' %}
                 <select name="{{ field.field_name }}" class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none" {% if field.is_required %}required{% endif %}>
+                    <option value="" selected disabled>Select {{ field.field_name | replace('_', ' ') }}</option>
                     {% for option in field.options %}
                     <option value="{{ option }}">{{ option }}</option>
                     {% endfor %}

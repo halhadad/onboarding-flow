@@ -6,6 +6,8 @@ from repositories.application_repo import SQLAlchemyApplicationRepository
 from integrations.identity import MockIdentityVerificationService
 from integrations.sanctions import MockSanctionsCheckService
 from integrations.credit import MockCreditBureauService
+from integrations.registry import MockRegistryService
+from integrations.bank_account import MockBankAccountService
 from services.onboarding_service import OnboardingService
 
 def get_db_session() -> Generator[Session, None, None]:
@@ -26,5 +28,7 @@ def get_onboarding_service(
         repository=repository,
         identity_service=MockIdentityVerificationService(),
         sanctions_service=MockSanctionsCheckService(),
-        credit_service=MockCreditBureauService()
+        credit_service=MockCreditBureauService(),
+        registry_service=MockRegistryService(),
+        bank_account_service=MockBankAccountService()
     )

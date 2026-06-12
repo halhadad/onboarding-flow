@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from config import settings
 
-# Thread-safe engine pool configuration isolated to block circular dependency bugs
+# Thread-safe engine pool configuration
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args={

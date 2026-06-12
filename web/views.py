@@ -1,11 +1,11 @@
 import uuid
+
 from fastapi import APIRouter, Request, Depends, HTTPException, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-import db.models
 from web.dependencies import get_onboarding_service, get_application_repository
 from services.onboarding_service import OnboardingService, StateTransitionError
-from repositories.application_repo import SQLAlchemyApplicationRepository
+from repositories.application_repo import ConcurrentModificationError, SQLAlchemyApplicationRepository
 from web.forms import FormValidationError, validate_step_payload
 from domain.flow_registry import FlowRegistryError, flow_registry
 from services.resume_service import ResumeService, ResumeApplicationError
@@ -87,21 +87,29 @@ async def handle_resume_submission(
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
     app_id_clean = application_id.strip()
-    app_record = repository.session.query(db.models.ApplicationRecord).filter(
-        db.models.ApplicationRecord.id == app_id_clean
-    ).first()
+    try:
+        uuid.UUID(app_id_clean)
+    except ValueError:
+        return templates.TemplateResponse(
+            request,
+            "resume.html",
+            {"error_message": "We could not resume that application. Check the resume reference or contact support."},
+            status_code=400,
+        )
+
+    app_context = repository.get_application_context(app_id_clean)
     
     generic_resume_error = "We could not resume that application. Check the resume reference or contact support."
 
-    if not app_record:
+    if not app_context:
         return templates.TemplateResponse(
             request, "resume.html", {"error_message": generic_resume_error}
         )
         
     resumer = ResumeService(repository=repository)
     try:
-        country_str = str(app_record.country)
-        account_type_str = str(app_record.account_type)
+        country_str = str(app_context["country"])
+        account_type_str = str(app_context["account_type"])
         
         outcome = resumer.resume_session(app_id_clean, country_str, account_type_str)
         url = f"/application/{app_id_clean}/step/{outcome['next_step_id']}?country={country_str}&type={account_type_str}"
@@ -128,13 +136,11 @@ async def render_step_view(
         raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
     
     # FIX: Always fetch the structural single source of truth version sequence straight from the database row
-    app_record = repository.session.query(db.models.ApplicationRecord).filter(
-        db.models.ApplicationRecord.id == application_id
-    ).first()
+    app_context = repository.get_application_context(application_id)
     
-    if not app_record:
+    if not app_context:
         raise HTTPException(status_code=404, detail="Application not found.")
-    db_version = app_record.version
+    db_version = int(app_context["version"])
     _assert_step_can_be_rendered(flow, repository, application_id, step_id)
         
     return templates.TemplateResponse(
@@ -157,7 +163,6 @@ async def submit_step_view(
     step_id: str,
     country: str = Form(...),
     type: str = Form(...),
-    version: int = Form(...),
     service: OnboardingService = Depends(get_onboarding_service)
 ):
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
@@ -173,6 +178,10 @@ async def submit_step_view(
     if not step_config:
         raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
 
+    current_version = service.repository.get_application_version(application_id)
+    if current_version is None:
+        raise HTTPException(status_code=404, detail="Application not found.")
+
     try:
         clean_payload = validate_step_payload(step_config, country, form_dict)
     except FormValidationError as validation_err:
@@ -184,7 +193,7 @@ async def submit_step_view(
                 "step": step_config,
                 "country": country,
                 "type": type,
-                "version": version,
+                "version": current_version,
                 "error_message": str(validation_err),
                 **_progress_context(flow, step_id),
             }
@@ -197,8 +206,23 @@ async def submit_step_view(
             account_type=type,
             step_id=step_id,
             form_data=clean_payload,
-            current_version=version,
+            current_version=current_version,
             request_id=request_id
+        )
+    except ConcurrentModificationError:
+        return templates.TemplateResponse(
+            request,
+            "step.html",
+            {
+                "application_id": application_id,
+                "step": step_config,
+                "country": country,
+                "type": type,
+                "version": current_version,
+                "error_message": "State conflict detected. Refresh this step before submitting again.",
+                **_progress_context(flow, step_id),
+            },
+            status_code=409,
         )
     except StateTransitionError as err:
         return templates.TemplateResponse(
@@ -209,7 +233,7 @@ async def submit_step_view(
                 "step": step_config,
                 "country": country,
                 "type": type,
-                "version": version,
+                "version": current_version,
                 "error_message": str(err),
                 **_progress_context(flow, step_id),
             },

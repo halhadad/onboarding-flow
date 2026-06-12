@@ -30,12 +30,9 @@ class ResumeService:
         flow = flow_registry.get_flow(country, account_type)
         
         resume_step_id = flow.steps[0].step_id
-        completed_steps_count = 0
-
         for step in flow.steps:
             existing_response = self.repository.get_step_response(application_id, step.step_id)
             if existing_response:
-                completed_steps_count += 1
                 next_step_id = flow.get_next_step_id(step.step_id)
                 if next_step_id:
                     resume_step_id = next_step_id
@@ -46,6 +43,5 @@ class ResumeService:
         return {
             "application_id": application_id,
             "next_step_id": resume_step_id,
-            "current_version": completed_steps_count + 1,
             "status": status.value
         }

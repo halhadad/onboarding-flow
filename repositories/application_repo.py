@@ -81,6 +81,22 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
         record: Any = self.session.query(ApplicationRecord).filter(ApplicationRecord.id == application_id).first()
         return cast(Optional[str], record.status) if record else None
 
+    def get_application_version(self, application_id: str) -> Optional[int]:
+        record: Any = self.session.query(ApplicationRecord).filter(ApplicationRecord.id == application_id).first()
+        return cast(Optional[int], record.version) if record else None
+
+    def get_application_context(self, application_id: str) -> Optional[Dict[str, Any]]:
+        record: Any = self.session.query(ApplicationRecord).filter(ApplicationRecord.id == application_id).first()
+        if not record:
+            return None
+        return {
+            "id": record.id,
+            "country": record.country,
+            "account_type": record.account_type,
+            "status": record.status,
+            "version": record.version,
+        }
+
     def update_application_status(self, application_id: str, status: str, current_version: int) -> None:
         updated_rows = self.session.query(ApplicationRecord).filter(
             ApplicationRecord.id == application_id,
