@@ -16,6 +16,7 @@ class InMemoryRepository:
         self.status = {"app-1": "STARTED"}
         self.responses = {}
         self.integration_logs = []
+        self.decisions = {}
         self.version = 1
 
     def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> None:
@@ -51,6 +52,9 @@ class InMemoryRepository:
     def log_integration_check(self, application_id: str, service_name: str, status_outcome: str, response_json: str, request_id: str) -> None:
         self.integration_logs.append((service_name, status_outcome))
 
+    def save_decision(self, application_id: str, outcome: str, reasons: list) -> None:
+        self.decisions[application_id] = (outcome, reasons)
+
 
 def test_business_profile_runs_bank_account_after_approved_business_credit():
     repository = InMemoryRepository()
@@ -81,9 +85,46 @@ def test_business_profile_runs_bank_account_after_approved_business_credit():
         request_id="req-1",
     )
 
-    assert result == {"status": "MANUAL_REVIEW", "next_step_id": None}
+    assert result == {"status": "MANUAL_REVIEW", "next_step_id": None, "reasons": ["bank_account:MANUAL_REVIEW"]}
     assert ("business_credit", "APPROVED") in repository.integration_logs
     assert ("bank_account", "MANUAL_REVIEW") in repository.integration_logs
+    assert repository.decisions["app-1"] == ("MANUAL_REVIEW", ["bank_account:MANUAL_REVIEW"])
+
+
+def test_step_collects_all_reasons_and_takes_the_worst_outcome():
+    # business_profile runs business_credit (reject) AND bank_account (review).
+    # Both run; all reasons are recorded; the worst outcome (REJECTED) wins.
+    repository = InMemoryRepository()
+    for step_id in ("business_identity", "representative", "beneficial_owners"):
+        repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
+    service = OnboardingService(
+        repository=repository,
+        identity_service=MockIdentityVerificationService(),
+        sanctions_service=MockSanctionsCheckService(),
+        credit_service=MockCreditBureauService(),
+        registry_service=MockRegistryService(),
+        bank_account_service=MockBankAccountService(),
+    )
+
+    result = service.process_step_submission(
+        application_id="app-1",
+        country="SPAIN",
+        account_type="business",
+        step_id="business_profile",
+        form_data={
+            "sector": "RETAIL",
+            "annual_turnover": 0.0,
+            "expected_monthly_volume": 0.0,
+            "iban": "ES9121000418450200059999",
+        },
+        current_version=1,
+        request_id="req-1",
+    )
+
+    assert result["status"] == "REJECTED"
+    assert result["next_step_id"] is None
+    assert set(result["reasons"]) == {"business_credit:REJECTED", "bank_account:MANUAL_REVIEW"}
+    assert repository.decisions["app-1"][0] == "REJECTED"
 
 
 def test_affordability_decision_flows_through_the_engine():
@@ -111,8 +152,9 @@ def test_affordability_decision_flows_through_the_engine():
         request_id="req-1",
     )
 
-    assert result == {"status": "REJECTED", "next_step_id": None}
+    assert result == {"status": "REJECTED", "next_step_id": None, "reasons": ["credit_bureau:REJECTED"]}
     assert ("credit_bureau", "REJECTED") in repository.integration_logs
+    assert repository.decisions["app-1"] == ("REJECTED", ["credit_bureau:REJECTED"])
 
 
 def test_transient_provider_failure_does_not_persist_or_manual_review():
@@ -205,7 +247,7 @@ def test_service_short_circuits_idempotent_repeat_submission():
         request_id="req-1",
     )
 
-    assert result == {"status": "STARTED", "next_step_id": "confirm_contact"}
+    assert result == {"status": "STARTED", "next_step_id": "confirm_contact", "reasons": []}
     assert repository.integration_logs == []
 
 

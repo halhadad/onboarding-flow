@@ -15,7 +15,7 @@ class CheckOutcome(str, Enum):
     REJECTED = "REJECTED"
 
 
-# Terminal: the application has a final decision and can never change again.
+# Final decision; can never change again.
 TERMINAL_APPLICATION_STATUSES = frozenset(
     {
         ApplicationStatus.APPROVED,
@@ -23,10 +23,8 @@ TERMINAL_APPLICATION_STATUSES = frozenset(
     }
 )
 
-# The only states in which a customer is allowed to submit/resume steps.
-# MANUAL_REVIEW is deliberately excluded: the file is parked with a human
-# reviewer, so the customer must not keep mutating it, but it is NOT terminal
-# either — an operator can still move it to APPROVED or REJECTED.
+# States where the customer may submit or resume a step.
+# MANUAL_REVIEW is excluded: parked with a reviewer, not terminal.
 CUSTOMER_SUBMITTABLE_STATUSES = frozenset(
     {
         ApplicationStatus.STARTED,
@@ -36,13 +34,10 @@ CUSTOMER_SUBMITTABLE_STATUSES = frozenset(
 
 
 def is_terminal(status: ApplicationStatus) -> bool:
+    """Whether the application has a final decision."""
     return status in TERMINAL_APPLICATION_STATUSES
 
 
 def is_customer_submittable(status: ApplicationStatus) -> bool:
-    """True only when the applicant may submit or resume a step.
-
-    This is the single gate used by both the web layer (routing) and the
-    service layer (submission) so the two can never drift apart.
-    """
+    """Whether the applicant may submit or resume a step."""
     return status in CUSTOMER_SUBMITTABLE_STATUSES

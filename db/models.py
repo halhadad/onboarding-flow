@@ -30,6 +30,7 @@ class ApplicationRecord(Base):
     # relationships
     step_responses = relationship("StepResponseRecord", back_populates="application", cascade="all, delete-orphan")
     integration_logs = relationship("IntegrationLogRecord", back_populates="application", cascade="all, delete-orphan")
+    decision = relationship("DecisionRecord", back_populates="application", uselist=False, cascade="all, delete-orphan")
 
 class StepResponseRecord(Base):
     __tablename__ = "step_responses"
@@ -48,6 +49,19 @@ class StepResponseRecord(Base):
     __table_args__ = (
         UniqueConstraint('application_id', 'step_id', name='_app_step_uc'),
     )
+
+class DecisionRecord(Base):
+    """Final decision plus the reasons that drove it."""
+    __tablename__ = "decisions"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    application_id = Column(String, ForeignKey("applications.id"), unique=True, index=True, nullable=False)
+    outcome = Column(String, nullable=False)
+    reasons_json = Column(Text, nullable=False, default="[]")
+    decided_at = Column(DateTime, default=utc_now, nullable=False)
+
+    application = relationship("ApplicationRecord", back_populates="decision")
+
 
 class IntegrationLogRecord(Base):
     __tablename__ = "integration_logs"

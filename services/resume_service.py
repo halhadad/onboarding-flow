@@ -24,18 +24,14 @@ class ResumeService:
         )
 
     def resume_session(self, application_id: str, country: str, account_type: str) -> Dict[str, Any]:
-        """
-        Calculates the operational state of an incomplete onboarding session.
-        Determines the exact step to resume by scanning step-level answers.
-        """
+        """Find the first incomplete step for an open application."""
         current_status_str = self.repository.get_application_status(application_id)
         if not current_status_str:
             raise ResumeApplicationError(f"No active session found matching ID: {application_id}")
 
         status = ApplicationStatus(current_status_str)
 
-        # Customers can only resume an application that is still open for input.
-        # Terminal (APPROVED/REJECTED) and MANUAL_REVIEW states are not resumable.
+        # Only open applications resume; terminal and MANUAL_REVIEW do not.
         if not is_customer_submittable(status):
             raise ResumeApplicationError(
                 f"Cannot resume session because the application is no longer open for input: {status.value}"

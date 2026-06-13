@@ -80,6 +80,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a simple layer diagram and request fl
 - `applications`: selected country/type, current status, optimistic version, request ID, resume handle, handle expiry and timestamps.
 - `step_responses`: one saved response per application step, with a payload hash for idempotency.
 - `integration_logs`: append-only audit-style record of mocked external checks, outcome, request ID and execution time.
+- `decisions`: one row per application — the final `outcome` plus the structured `reasons` that drove it (e.g. `credit_bureau:REJECTED`), so "why was this rejected / referred?" is answerable directly rather than reconstructed from logs.
 
 ### Handling sensitive data
 
@@ -111,6 +112,18 @@ Provider calls are wrapped so a transient outage is treated as exactly that: the
 - Resume uses a high-entropy server-issued handle with expiry, stored in an HTTP-only cookie, and returns a generic error to avoid state disclosure. A production version would bind this to an authenticated customer session or deliver a magic link through a verified channel, with rate limiting and dedicated audit events.
 - Audit logging is persisted in `integration_logs`; a production version would likely make audit writes more explicit, immutable and monitored.
 - No real national eID, KYC, registry, credit bureau or banking API is called.
+
+## Limitations
+
+Known, deliberate boundaries of this sample:
+
+- A `MANUAL_REVIEW` application is a final stop for the *customer*; there is no operator/back-office path to resolve it (would be a separate authenticated API).
+- The flow stops at the first step that produces an adverse outcome. All checks *within that step* are run and all their reasons recorded, but checks in later steps are not reached, so the `reasons` reflect that step only.
+- Stored application data is not encrypted at rest in this sample (documented above as a production concern, not implemented).
+- Schema is created via `create_all()`; there are no migrations. A real deployment would use Alembic.
+- No authentication/authorization, rate limiting or CSRF protection.
+- Country-specific business rules are representative mocks; all markets share the same decisioning thresholds.
+- A completed step cannot be re-submitted with different data (resume returns to the first *incomplete* step).
 
 ## Production thinking and future improvements
 

@@ -7,7 +7,7 @@ class MockIdentityVerificationService(IdentityVerificationService):
     def verify(self, personal_identity_number: str) -> IntegrationResult:
         clean_pin = personal_identity_number.strip()
 
-        # Deterministic simulation rules use explicit last-four sentinels so normal dates are not rejected.
+        # The last four digits act as sentinels, so normal dates are not rejected.
         if clean_pin.endswith("0000"):
             payload = {"error": "Document reference not found in national registry", "code": "EXPIRED_ID"}
             return IntegrationResult(

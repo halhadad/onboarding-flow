@@ -10,9 +10,7 @@ class FormFieldConfig:
     is_required: bool
     options: Sequence[str] = field(default_factory=tuple)
     requires_true: bool = False
-    # When set, this field carries PII. It drives log redaction (and, in
-    # production, field-level encryption). Driven by the flow schema itself, so
-    # marking a field sensitive cannot silently bypass redaction.
+    # When set, the field is PII; drives log redaction (and encryption in production).
     pii_category: Optional[PiiCategory] = None
 
     def __post_init__(self) -> None:

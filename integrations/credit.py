@@ -3,12 +3,7 @@ from domain.decisioning import CreditAssessment
 
 
 class MockCreditBureauService(CreditBureauService):
-    """Deterministic stand-in for a credit bureau / affordability provider.
-
-    It only *reports* signals (a synthetic score, disposable income, leverage
-    and flags). It does not decide the application — that is the decision
-    engine's job, so the policy lives in exactly one place.
-    """
+    """Deterministic credit bureau mock; reports signals, does not decide."""
 
     def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> CreditAssessment:
         disposable_income = monthly_income - monthly_expenses

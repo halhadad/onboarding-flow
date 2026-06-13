@@ -1,16 +1,9 @@
-"""Tax-residency country options.
+# Tax residency is a person attribute, not a market; broad list, not the three markets.
 
-Tax residency is a property of a *person*, not of the market they are onboarding
-into, so it is a broad ISO-3166 list rather than the three operating markets.
-The list deliberately includes a few sanctioned jurisdictions so the
-sanctions/PEP reject path is actually reachable from the UI.
-"""
-
-# Sanctioned jurisdictions the screening provider treats as a confirmed hit.
+# Jurisdictions the screening provider treats as a confirmed hit.
 SANCTIONED_RESIDENCIES = frozenset({"IR", "KP", "SY"})
 
-# A representative subset of ISO 3166-1 alpha-2 codes. Not exhaustive — a
-# production app would source the full list from a maintained reference dataset.
+# Representative subset of ISO two letter country codes; sanctioned ones included so the reject path is reachable.
 TAX_RESIDENCY_OPTIONS = (
     "AT", "BE", "BG", "CH", "CY", "CZ", "DE", "DK", "EE", "ES",
     "FI", "FR", "GB", "GR", "HR", "HU", "IE", "IS", "IT", "LT",

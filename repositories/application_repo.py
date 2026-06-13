@@ -5,10 +5,11 @@ from typing import Dict, Any, Optional, cast
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from audit.log import SecurityAuditLogger
+from config import settings
 from services.pii import redact_integration_payload
 from domain.ports import ApplicationRepository
 from domain.states import ApplicationStatus, CheckOutcome
-from db.models import ApplicationRecord, StepResponseRecord, IntegrationLogRecord
+from db.models import ApplicationRecord, StepResponseRecord, IntegrationLogRecord, DecisionRecord
 
 
 class ConcurrentModificationError(Exception):
@@ -20,7 +21,7 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
         self.session = session
 
     def _resume_token_expiry(self) -> datetime:
-        return datetime.now(timezone.utc) + timedelta(days=7)
+        return datetime.now(timezone.utc) + timedelta(seconds=settings.RESUME_TOKEN_TTL_SECONDS)
 
     def _is_expired(self, expires_at: Optional[datetime]) -> bool:
         if expires_at is None:
@@ -36,7 +37,7 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             account_type=account_type.lower(),
             status=ApplicationStatus.STARTED.value,
             version=1,
-            resume_token=secrets.token_urlsafe(32),
+            resume_token=secrets.token_urlsafe(settings.RESUME_TOKEN_BYTES),
             resume_token_expires_at=self._resume_token_expiry(),
             request_id=request_id 
         )
@@ -115,8 +116,7 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
         self.session.commit()
 
     def save_step_response(self, application_id: str, step_id: str, form_data: Dict[str, Any], payload_hash: str) -> None:
-        # Stored as entered — the bank needs to read this back. Protection at
-        # rest (encryption/access control) is a production concern, see README.
+        # Stored as entered; the bank reads it back. Encryption at rest is a production concern.
         serialized_data = json.dumps(form_data, sort_keys=True)
         record: Any = self.session.query(StepResponseRecord).filter(
             StepResponseRecord.application_id == application_id,
@@ -161,6 +161,22 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             StepResponseRecord.application_id == application_id
         ).order_by(StepResponseRecord.completed_at).all()
         return {record.step_id: json.loads(record.form_data_json) for record in records}
+
+    def save_decision(self, application_id: str, outcome: str, reasons: list) -> None:
+        reasons_json = json.dumps(reasons)
+        record: Any = self.session.query(DecisionRecord).filter(
+            DecisionRecord.application_id == application_id
+        ).first()
+        if record:
+            record.outcome = outcome
+            record.reasons_json = reasons_json
+        else:
+            self.session.add(DecisionRecord(
+                application_id=application_id,
+                outcome=outcome,
+                reasons_json=reasons_json,
+            ))
+        self.session.commit()
 
     def log_integration_check(self, application_id: str, service_name: str, status_outcome: CheckOutcome, response_json: str, request_id: str) -> None:
         outcome_value = CheckOutcome(status_outcome).value

@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from config import settings
 
-# Thread-safe engine pool configuration
+# Engine pool configuration.
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args={
@@ -13,7 +13,7 @@ engine = create_engine(
 
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
-    """Guarantees strict atomic mutations by forcing transaction pools to IMMEDIATE mode."""
+    """Enable foreign keys and IMMEDIATE isolation per connection."""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON;")
     dbapi_connection.isolation_level = "IMMEDIATE"

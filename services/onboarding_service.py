@@ -27,12 +27,7 @@ logger = logging.getLogger("onboarding.service")
 
 
 class OnboardingService:
-    """Orchestrates one step submission: guards state, runs the step's checks
-    via the IntegrationRunner, persists results, and advances the application.
-
-    It does not know *how* a provider is called (that's the runner) nor *how*
-    a signal becomes a decision (that's the engine) — it just sequences them.
-    """
+    """Orchestrates one step submission: guard state, run checks, advance."""
 
     def __init__(
         self,
@@ -58,12 +53,7 @@ class OnboardingService:
         )
 
     def _generate_idempotency_key(self, form_data: Dict[str, Any]) -> str:
-        """
-        Plain SHA-256 digest of the submitted payload, used only to detect that
-        a step was re-submitted unchanged so we can skip re-running its checks.
-        It is a change-detection fingerprint, not a security signature, so it
-        needs no secret/HMAC — that would be ceremony without a threat to defend.
-        """
+        """Content fingerprint to detect an unchanged resubmission."""
         normalised = json.dumps(form_data, sort_keys=True)
         return hashlib.sha256(normalised.encode()).hexdigest()
 
@@ -91,11 +81,7 @@ class OnboardingService:
         current_version: int,
         request_id: str
     ) -> Dict[str, Any]:
-        """
-        Orchestrates step progression using pure domain models. Reconstructs the
-        application entity, runs the step's required checks, and advances state
-        under optimistic concurrency control.
-        """
+        """Validate, run the step's checks, and advance the application."""
         flow = self.flow_registry.get_flow(country, account_type)
         step_config = flow.get_step_by_id(step_id)
         if not step_config:
@@ -124,9 +110,7 @@ class OnboardingService:
             version=current_version
         )
 
-        # Single gate shared with the web layer: only STARTED / IN_PROGRESS
-        # applications accept customer input. This covers terminal states as
-        # well as MANUAL_REVIEW (parked with a human reviewer).
+        # Gate shared with the web layer; covers terminal and MANUAL_REVIEW states.
         if not is_customer_submittable(application.status):
             raise StateTransitionError(
                 f"This application can no longer be modified by the applicant (status: {application.status.value})."
@@ -139,36 +123,40 @@ class OnboardingService:
 
         if existing_response and existing_response.get("payload_hash") == current_hash:
             next_step_id = flow.get_next_step_id(step_id)
-            return {"status": application.status.value, "next_step_id": next_step_id}
+            return {"status": application.status.value, "next_step_id": next_step_id, "reasons": []}
 
-        # Run the step's checks FIRST. If a provider is transiently unavailable
-        # the runner raises IntegrationUnavailableError, which propagates out
-        # before anything is persisted — so the step is not marked complete and
-        # a retry re-runs it (it does not get parked in manual review).
-        adverse_result = None
+        # Run all checks before persisting; a reviewer needs every reason.
+        # A transient failure raises before persistence, so a retry runs the step again.
         results = []
         for integration in step_config.required_integrations:
             result = self.integration_runner.run(integration, application_id, form_data, request_id)
             results.append((integration, result))
-            if result.status_outcome in {CheckOutcome.REJECTED, CheckOutcome.MANUAL_REVIEW}:
-                adverse_result = result
-                break  # stop at the first adverse outcome
 
-        # Checks completed without a transient failure — now persist the step,
-        # the audit log entries, and the resulting status atomically-ish.
+        # Checks passed without a transient failure; persist step and audit logs.
         self.repository.save_step_response(application_id, step_id, form_data, current_hash)
         for integration, result in results:
             self.repository.log_integration_check(
                 application_id, integration, result.status_outcome, result.raw_response_json, request_id
             )
 
-        if adverse_result is not None:
-            application.transition_status(ApplicationStatus(adverse_result.status_outcome.value))
+        # Collect every adverse outcome and pick the most severe one.
+        reasons = [
+            f"{getattr(integration, 'value', integration)}:{result.status_outcome.value}"
+            for integration, result in results
+            if result.status_outcome != CheckOutcome.APPROVED
+        ]
+        rejected = any(r.status_outcome == CheckOutcome.REJECTED for _, r in results)
+        needs_review = any(r.status_outcome == CheckOutcome.MANUAL_REVIEW for _, r in results)
+
+        if rejected or needs_review:
+            outcome = CheckOutcome.REJECTED if rejected else CheckOutcome.MANUAL_REVIEW
+            application.transition_status(ApplicationStatus(outcome.value))
             self.repository.update_application_status(application.id, application.status.value, application.version)
+            self.repository.save_decision(application.id, application.status.value, reasons)
             SecurityAuditLogger.log_state_mutation(
                 application.id, "application_status", application.status.value, request_id
             )
-            return {"status": application.status.value, "next_step_id": None}
+            return {"status": application.status.value, "next_step_id": None, "reasons": reasons}
 
         # All checks passed: advance to the next step, or approve if this was the last.
         next_step_id = flow.get_next_step_id(step_id)
@@ -178,6 +166,8 @@ class OnboardingService:
             application.transition_status(ApplicationStatus.IN_PROGRESS)
 
         self.repository.update_application_status(application.id, application.status.value, application.version)
+        if next_step_id is None:
+            self.repository.save_decision(application.id, application.status.value, [])
         SecurityAuditLogger.log_state_mutation(
             application.id, "application_status", application.status.value, request_id
         )
@@ -190,4 +180,4 @@ class OnboardingService:
                 "outcome": application.status.value,
             },
         )
-        return {"status": application.status.value, "next_step_id": next_step_id}
+        return {"status": application.status.value, "next_step_id": next_step_id, "reasons": []}

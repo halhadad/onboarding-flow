@@ -7,8 +7,10 @@ from starlette.requests import Request
 logger = logging.getLogger("onboarding.request")
 
 class BankingSecurityAuditMiddleware(BaseHTTPMiddleware):
+    """Attach a request ID and log each request."""
+
     async def dispatch(self, request: Request, call_next):
-        # Ensure every request has a unique audit trail ID
+        # Give every request a unique audit ID.
         request.state.request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         started_at = time.perf_counter()
 

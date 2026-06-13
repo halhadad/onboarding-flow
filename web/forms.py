@@ -9,10 +9,8 @@ class FormValidationError(ValueError):
     pass
 
 
-# Validation is driven entirely by the flow's declared fields via
-# ``validate_step_payload``. Per-field rules (identity formats, IBAN, phone,
-# amounts) live in the small helpers below so there is one place to look — no
-# parallel per-step form classes to keep in sync with the flow definitions.
+# Validation is driven by the flow's declared fields via validate_step_payload.
+# Per field rules live in the helpers below; no parallel form classes.
 
 
 def _clean_text(value: Any) -> str:

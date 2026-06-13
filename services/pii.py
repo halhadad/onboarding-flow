@@ -1,27 +1,12 @@
-"""Keeping personal data out of the audit/operational logs.
-
-Design decision: the captured application data itself (in `step_responses`) is
-stored **as entered**, not redacted. A bank legitimately needs to read those
-answers later (support, review, compliance), so destroying them would be wrong.
-The production answer for protecting them at rest is encryption + access control
-+ retention policy (see README), not redaction.
-
-What we *do* redact is anything written to the **audit trail / logs**, because
-those are for "what happened", not for holding raw identifiers. That redaction
-is driven by the same flow schema (`FormFieldConfig.pii_category`) plus the
-known financial signal keys, and it walks nested structures so a sensitive value
-buried inside an object cannot leak.
-"""
-
 import json
 from functools import lru_cache
 from typing import Any, Dict, Set
 
 from domain.flow_registry import flow_registry
 
-# Keys that appear in provider responses and carry raw financial figures or
-# identifiers. Provider payloads are not described by the form schema, so this
-# small set complements the schema-derived field names below.
+# Stored application data is kept as entered; only audit logs are redacted.
+# Provider response keys carrying financial figures or identifiers; the form
+# schema does not describe these, so this set complements the schema field names.
 _PROVIDER_SIGNAL_KEYS: Set[str] = {
     "income", "expenses", "debts",
     "monthly_income", "monthly_expenses", "outstanding_debts",
@@ -32,11 +17,7 @@ _PROVIDER_SIGNAL_KEYS: Set[str] = {
 
 @lru_cache(maxsize=1)
 def pii_field_categories() -> Dict[str, str]:
-    """Map of {form_field_name: redaction_category} built from every flow.
-
-    Single source of truth for which fields are sensitive — also what a
-    production system would drive field-level encryption from.
-    """
+    """Map of field name to redaction category, built from every flow."""
     categories: Dict[str, str] = {}
     for flow in flow_registry.all_flows():
         for step in flow.steps:

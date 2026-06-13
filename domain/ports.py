@@ -64,6 +64,11 @@ class ApplicationRepository(ABC):
         """Appends an execution log record to the immutable audit ledger."""
         pass
 
+    @abstractmethod
+    def save_decision(self, application_id: str, outcome: str, reasons: list) -> None:
+        """Records (or replaces) the final automated decision and its reasons."""
+        pass
+
 
 class IdentityVerificationService(ABC):
     @abstractmethod

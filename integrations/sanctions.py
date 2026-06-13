@@ -4,11 +4,7 @@ from domain.countries import SANCTIONED_RESIDENCIES
 
 
 class MockSanctionsCheckService(SanctionsCheckService):
-    """Deterministic stand-in for a sanctions / PEP screening provider.
-
-    Reports the raw screening signals only; the decision engine maps a hit to
-    a rejection and a PEP match to manual review.
-    """
+    """Deterministic sanctions screening mock; reports signals, does not decide."""
 
     def check(self, tax_residency: str, is_pep: bool) -> SanctionsScreening:
         clean_residency = tax_residency.strip().upper()

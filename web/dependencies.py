@@ -14,7 +14,7 @@ from services.onboarding_service import OnboardingService
 
 
 def get_db_session() -> Generator[Session, None, None]:
-    """Ensures clean transaction session close teardowns per query frame."""
+    """Yield a DB session and close it after."""
     session = SessionLocal()
     try:
         yield session
@@ -27,8 +27,7 @@ def get_application_repository(session: Session = Depends(get_db_session)) -> SQ
 def get_onboarding_service(
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ) -> OnboardingService:
-    # Composition root: dependencies are wired here and injected, so neither the
-    # service nor the domain layer reaches out to module-level globals.
+    # Composition root; wire and inject dependencies here.
     return OnboardingService(
         repository=repository,
         identity_service=MockIdentityVerificationService(),

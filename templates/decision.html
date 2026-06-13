@@ -2,11 +2,11 @@
 {% block content %}
 <div class="bg-white shadow rounded-lg p-12 max-w-md mx-auto text-center mt-12">
     {% if status == 'APPROVED' %}
-        <div class="h-16 w-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto text-3xl font-bold mb-4">&checkmark;</div>
+        <div class="h-16 w-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto text-xl font-bold mb-4">OK</div>
         <h2 class="text-2xl font-bold text-gray-800 mb-2">Application Approved</h2>
         <p class="text-gray-600 text-sm">Your onboarding application has successfully matched the approval criteria.</p>
     {% elif status == 'REJECTED' %}
-        <div class="h-16 w-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto text-3xl font-bold mb-4">&times;</div>
+        <div class="h-16 w-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto text-xl font-bold mb-4">X</div>
         <h2 class="text-2xl font-bold text-gray-800 mb-2">Application Declined</h2>
         <p class="text-gray-600 text-sm">Our automated risk verification parameters cannot approve this file configuration submission at this time.</p>
     {% elif status == 'MANUAL_REVIEW' %}
@@ -14,6 +14,18 @@
         <h2 class="text-2xl font-bold text-gray-800 mb-2">Under Manual Verification</h2>
         <p class="text-gray-600 text-sm">Your details have been cleanly logged to our internal compliance queues. A credit officer will inspect your parameters shortly.</p>
     {% endif %}
-    <a href="/" class="inline-block mt-8 text-sm font-semibold text-blue-600 hover:text-blue-800">&larr; Return to Central Hub</a>
+
+    {% if reasons %}
+    <div class="mt-6 text-left bg-gray-50 border border-gray-200 rounded p-4">
+        <p class="text-xs font-bold uppercase text-gray-500 mb-2">Reasons</p>
+        <ul class="text-sm text-gray-700 space-y-1">
+            {% for reason in reasons %}
+            <li class="font-mono">{{ reason }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <a href="/" class="inline-block mt-8 text-sm font-semibold text-blue-600 hover:text-blue-800">Return to start</a>
 </div>
 {% endblock %}

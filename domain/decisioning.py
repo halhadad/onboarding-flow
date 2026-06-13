@@ -7,7 +7,7 @@ from domain.states import CheckOutcome
 
 @dataclass(frozen=True)
 class CreditAssessment:
-    """Raw affordability signals returned by the (mock) credit bureau."""
+    """Raw affordability signals from the credit bureau."""
 
     score: int
     disposable_income: float
@@ -17,7 +17,7 @@ class CreditAssessment:
 
 @dataclass(frozen=True)
 class SanctionsScreening:
-    """Raw signals returned by the (mock) sanctions / PEP screening provider."""
+    """Raw signals from the sanctions screening provider."""
 
     sanctions_hit: bool
     pep_hit: bool
@@ -26,7 +26,7 @@ class SanctionsScreening:
 
 @dataclass(frozen=True)
 class OwnershipProfile:
-    """Beneficial-ownership facts captured for a business application."""
+    """Beneficial ownership facts for a business."""
 
     ubo_count: int
     largest_ownership_percent: float
@@ -34,7 +34,7 @@ class OwnershipProfile:
 
 @dataclass(frozen=True)
 class BusinessProfile:
-    """Business activity facts used for KYB risk assessment."""
+    """Business activity facts for KYB."""
 
     annual_turnover: float
     expected_monthly_volume: float
@@ -42,14 +42,7 @@ class BusinessProfile:
 
 
 class AutomatedDecisionEngine:
-    """The single place where facts become a decision.
-
-    Every risk *policy* lives here — affordability thresholds, what counts as a
-    high-risk sector, when concentrated ownership needs review. The integration
-    layer only gathers facts; it never decides. Provider-authority checks
-    (identity, registry, bank account) are the exception: those return an
-    external system's own verdict and are not re-judged here.
-    """
+    """Single owner of risk policy; maps facts to a decision."""
 
     def __init__(
         self,

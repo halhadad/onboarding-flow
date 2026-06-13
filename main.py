@@ -16,7 +16,7 @@ logger = logging.getLogger("onboarding.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Handles the transactional ledger generation and engages Write-Ahead Logging."""
+    """Create tables and enable WAL on startup."""
     db.models.Base.metadata.create_all(bind=engine)
     with engine.connect() as connection:
         connection.exec_driver_sql("PRAGMA journal_mode=WAL;")
@@ -35,20 +35,8 @@ app.add_middleware(BankingSecurityAuditMiddleware)
 
 @app.exception_handler(ConcurrentModificationError)
 async def concurrent_modification_exception_handler(request: Request, exc: ConcurrentModificationError):
-    """Gracefully intercepts double-submission collisions at the UI boundary."""
-    return templates.TemplateResponse(
-        request,
-        "step.html",
-        {
-            "error_message": "State conflict detected. It appears you have updated this session in another window.",
-            "application_id": request.path_params.get("application_id", ""),
-            "country": request.query_params.get("country", "SWEDEN"),
-            "type": request.query_params.get("type", "private"),
-            "version": int(request.query_params.get("version", 1)),
-            "step": None
-        },
-        status_code=409
-    )
+    """Fallback conflict page for double submissions."""
+    return templates.TemplateResponse(request, "conflict.html", {}, status_code=409)
 
 app.include_router(web_router)
 

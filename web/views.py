@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Request, Depends, HTTPException, Form
+from fastapi import APIRouter, Request, Depends, HTTPException, Form, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from web.dependencies import get_onboarding_service, get_application_repository
@@ -9,14 +9,16 @@ from services.integration_runner import IntegrationUnavailableError
 from repositories.application_repo import ConcurrentModificationError, SQLAlchemyApplicationRepository
 from web.forms import FormValidationError, validate_step_payload
 from domain.flow_registry import FlowRegistryError, flow_registry
-from domain.states import ApplicationStatus, TERMINAL_APPLICATION_STATUSES, is_customer_submittable
+from domain.states import ApplicationStatus, is_customer_submittable
 from services.resume_service import ResumeService, ResumeApplicationError
+
+from config import settings
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 templates.env.autoescape = True
-RESUME_COOKIE_NAME = "bank_onboarding_resume"
-RESUME_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+RESUME_COOKIE_NAME = settings.RESUME_COOKIE_NAME
+RESUME_COOKIE_MAX_AGE_SECONDS = settings.RESUME_TOKEN_TTL_SECONDS
 
 
 def _progress_context(flow, step_id: str) -> dict:
@@ -61,8 +63,7 @@ def _load_routable_application_context(
     if stored_country != country.upper() or stored_account_type != account_type.lower():
         raise HTTPException(status_code=403, detail="Application route does not match the stored onboarding journey.")
 
-    # Single shared gate with the service layer: only STARTED / IN_PROGRESS
-    # applications accept customer routing (MANUAL_REVIEW is parked with a reviewer).
+    # Same gate as the service layer; MANUAL_REVIEW is parked with a reviewer.
     if not is_customer_submittable(ApplicationStatus(str(app_context["status"]))):
         raise HTTPException(status_code=409, detail="This application is no longer open for customer input.")
 
@@ -174,15 +175,15 @@ async def render_step_view(
     application_id: str,
     step_id: str,
     country: str,
-    type: str,
+    account_type: str = Query(alias="type"),
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
-    """Renders forms dynamically using state context configurations fetched from the database layer."""
+    """Render a step's form."""
     app_context = _load_routable_application_context(
         repository,
         application_id,
         country,
-        type,
+        account_type,
         request.cookies.get(RESUME_COOKIE_NAME),
     )
     stored_country = str(app_context["country"])
@@ -217,17 +218,15 @@ async def review_view(
     request: Request,
     application_id: str,
     country: str,
-    type: str,
+    account_type: str = Query(alias="type"),
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository),
 ):
-    """Read-only summary of everything captured so far (already redacted), plus
-    which steps remain. Values are rendered through Jinja's native autoescaping
-    as plain field/value pairs — never as a raw serialized blob."""
+    """Read only summary of captured data and remaining steps."""
     app_context = _load_routable_application_context(
         repository,
         application_id,
         country,
-        type,
+        account_type,
         request.cookies.get(RESUME_COOKIE_NAME),
     )
     stored_country = str(app_context["country"])
@@ -270,7 +269,7 @@ async def submit_step_view(
     application_id: str,
     step_id: str,
     country: str = Form(...),
-    type: str = Form(...),
+    account_type: str = Form(alias="type"),
     service: OnboardingService = Depends(get_onboarding_service)
 ):
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
@@ -281,7 +280,7 @@ async def submit_step_view(
         service.repository,
         application_id,
         country,
-        type,
+        account_type,
         request.cookies.get(RESUME_COOKIE_NAME),
     )
     stored_country = str(app_context["country"])
@@ -356,9 +355,7 @@ async def submit_step_view(
             status_code=409,
         )
     except IntegrationUnavailableError:
-        # Transient provider outage: the step was NOT saved, so the customer can
-        # simply resubmit. We do not park them in manual review. In production
-        # this is where automatic retry/backoff and a circuit breaker would sit.
+        # Transient outage; step not saved, the customer can resubmit.
         return templates.TemplateResponse(
             request,
             "step.html",
@@ -377,14 +374,15 @@ async def submit_step_view(
     status_outcome = result["status"]
     next_step_id = result["next_step_id"]
 
-    if status_outcome in {status.value for status in TERMINAL_APPLICATION_STATUSES} and not next_step_id:
+    # No next step means the flow ended; show the decision page.
+    if not next_step_id:
         response = templates.TemplateResponse(
             request,
             "decision.html",
-            {"status": status_outcome}
+            {"status": status_outcome, "reasons": result.get("reasons", [])},
         )
         response.delete_cookie(RESUME_COOKIE_NAME)
         return response
-        
+
     url = f"/application/{application_id}/step/{next_step_id}?country={stored_country}&type={stored_account_type}"
     return RedirectResponse(url=url, status_code=303)

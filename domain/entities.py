@@ -12,12 +12,7 @@ class ApplicationEntity:
     responses: Dict[str, Any] = field(default_factory=dict)
 
     def can_transition_to(self, new_status: ApplicationStatus) -> bool:
-        """
-        Enforces the terminal-state invariant: once an application reaches a
-        terminal status (APPROVED or REJECTED) it can never change again.
-        MANUAL_REVIEW is intentionally NOT terminal — an operator can still move
-        it on to APPROVED or REJECTED — so transitions out of it are allowed.
-        """
+        """False once the status is terminal; MANUAL_REVIEW is not terminal."""
         if self.status in TERMINAL_APPLICATION_STATUSES:
             return False
         return True
