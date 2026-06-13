@@ -7,6 +7,7 @@ class FormFieldConfig:
     field_type: str  # text, number, select, boolean
     is_required: bool
     options: Sequence[str] = field(default_factory=tuple)
+    requires_true: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "options", tuple(self.options))

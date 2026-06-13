@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import uuid
 from sqlalchemy import Column, String, Integer, DateTime, Text, UniqueConstraint, ForeignKey
 from sqlalchemy.orm import declarative_base, relationship
+from domain.states import ApplicationStatus
 
 Base = declarative_base()
 
@@ -17,7 +18,7 @@ class ApplicationRecord(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     country = Column(String, nullable=False)
     account_type = Column(String, nullable=False)
-    status = Column(String, nullable=False, default="STARTED")
+    status = Column(String, nullable=False, default=ApplicationStatus.STARTED.value)
     current_step_index = Column(Integer, default=0, nullable=False)
     version = Column(Integer, default=1, nullable=False)
     resume_token = Column(String, unique=True, index=True, nullable=True, default=generate_uuid)

@@ -1,11 +1,15 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from dataclasses import dataclass
+from domain.states import CheckOutcome
 
 @dataclass(frozen=True)
 class IntegrationResult:
-    status_outcome: str  # APPROVED, MANUAL_REVIEW, REJECTED
+    status_outcome: CheckOutcome
     raw_response_json: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status_outcome", CheckOutcome(self.status_outcome))
 
 class ApplicationRepository(ABC):
 
@@ -30,6 +34,11 @@ class ApplicationRepository(ABC):
         pass
 
     @abstractmethod
+    def get_application_context_by_resume_token(self, resume_token: str) -> Optional[Dict[str, Any]]:
+        """Retrieves application routing metadata by a non-ID resume token."""
+        pass
+
+    @abstractmethod
     def update_application_status(self, application_id: str, status: str, current_version: int) -> None:
         """Updates the application status utilizing optimistic concurrency control."""
         pass
@@ -45,7 +54,7 @@ class ApplicationRepository(ABC):
         pass
 
     @abstractmethod
-    def log_integration_check(self, application_id: str, service_name: str, status_outcome: str, response_json: str, request_id: str) -> None:
+    def log_integration_check(self, application_id: str, service_name: str, status_outcome: CheckOutcome, response_json: str, request_id: str) -> None:
         """Appends an execution log record to the immutable audit ledger."""
         pass
 

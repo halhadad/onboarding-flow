@@ -1,8 +1,10 @@
 import json
 import hashlib
 import hmac
+import logging
 from typing import Callable, Dict, Any
 from config import settings
+from audit.log import SecurityAuditLogger
 from domain.ports import (
     ApplicationRepository, 
     IdentityVerificationService, 
@@ -14,11 +16,14 @@ from domain.ports import (
 )
 from domain.flow_registry import flow_registry
 from domain.entities import ApplicationEntity
-from domain.states import ApplicationStatus
+from domain.states import ApplicationStatus, CheckOutcome, TERMINAL_APPLICATION_STATUSES
 
 
 class StateTransitionError(Exception):
     pass
+
+
+logger = logging.getLogger("onboarding.service")
 
 class OnboardingService:
     def __init__(
@@ -86,7 +91,7 @@ class OnboardingService:
 
     def _run_address_lookup(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         return IntegrationResult(
-            status_outcome="APPROVED",
+            status_outcome=CheckOutcome.APPROVED,
             raw_response_json=json.dumps({"address_confidence": 0.92, "status": "FETCHED"}),
         )
 
@@ -111,7 +116,7 @@ class OnboardingService:
         has_authority = bool(form_data.get("has_signatory_authority"))
         payload = {"authority": "confirmed" if has_authority else "missing_or_unconfirmed"}
         return IntegrationResult(
-            status_outcome="APPROVED" if has_authority else "MANUAL_REVIEW",
+            status_outcome=CheckOutcome.APPROVED if has_authority else CheckOutcome.MANUAL_REVIEW,
             raw_response_json=json.dumps(payload),
         )
 
@@ -119,27 +124,27 @@ class OnboardingService:
         ubo_count = float(form_data.get("ubo_count", 0))
         largest_ownership = float(form_data.get("largest_ownership_percent", 0))
         if ubo_count <= 0:
-            return IntegrationResult("REJECTED", json.dumps({"ubo_status": "missing_ubo"}))
+            return IntegrationResult(CheckOutcome.REJECTED, json.dumps({"ubo_status": "missing_ubo"}))
         if largest_ownership >= 75:
-            return IntegrationResult("MANUAL_REVIEW", json.dumps({"ubo_status": "concentrated_ownership"}))
-        return IntegrationResult("APPROVED", json.dumps({"ubo_status": "verified"}))
+            return IntegrationResult(CheckOutcome.MANUAL_REVIEW, json.dumps({"ubo_status": "concentrated_ownership"}))
+        return IntegrationResult(CheckOutcome.APPROVED, json.dumps({"ubo_status": "verified"}))
 
     def _run_business_credit_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         turnover = float(form_data.get("annual_turnover", 0))
         monthly_volume = float(form_data.get("expected_monthly_volume", 0))
         sector = str(form_data.get("sector", "")).lower()
         if turnover <= 0:
-            outcome = ApplicationStatus.REJECTED
+            outcome = CheckOutcome.REJECTED
             payload = {"business_credit": "no_turnover"}
         elif sector == "financial_services" or monthly_volume > turnover:
-            outcome = ApplicationStatus.MANUAL_REVIEW
+            outcome = CheckOutcome.MANUAL_REVIEW
             payload = {"business_credit": "enhanced_due_diligence"}
         else:
-            outcome = ApplicationStatus.APPROVED
+            outcome = CheckOutcome.APPROVED
             payload = {"business_credit": "acceptable"}
         payload["turnover_band"] = self._money_band(turnover)
         payload["monthly_volume_band"] = self._money_band(monthly_volume)
-        return IntegrationResult(outcome.value, json.dumps(payload))
+        return IntegrationResult(outcome, json.dumps(payload))
 
     def _run_bank_account_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         return self.bank_account_service.validate_iban(str(form_data.get("iban", "")))
@@ -163,6 +168,17 @@ class OnboardingService:
         if not step_config:
             raise ValueError(f"Step {step_id} does not map to this specific application configuration workflow.")
 
+        logger.info(
+            "step_submission_started",
+            extra={
+                "request_id": request_id,
+                "application_id": application_id,
+                "step_id": step_id,
+                "country": country,
+                "account_type": account_type,
+            },
+        )
+
         # Reconstruct the application model state cleanly from historical records
         current_status_str = self.repository.get_application_status(application_id)
         if current_status_str is None:
@@ -175,7 +191,7 @@ class OnboardingService:
             version=current_version
         )
 
-        if application.status in [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+        if application.status in TERMINAL_APPLICATION_STATUSES:
             raise StateTransitionError("Terminal applications cannot be changed.")
 
         self._assert_step_is_reachable(application_id, flow, step_id)
@@ -201,9 +217,12 @@ class OnboardingService:
                 application_id, integration, result.status_outcome, result.raw_response_json, request_id
             )
 
-            if result.status_outcome in ["REJECTED", "MANUAL_REVIEW"]:
-                application.transition_status(ApplicationStatus(result.status_outcome))
+            if result.status_outcome in {CheckOutcome.REJECTED, CheckOutcome.MANUAL_REVIEW}:
+                application.transition_status(ApplicationStatus(result.status_outcome.value))
                 self.repository.update_application_status(application.id, application.status.value, application.version)
+                SecurityAuditLogger.log_state_mutation(
+                    application.id, "application_status", application.status.value, request_id
+                )
                 return {"status": application.status.value, "next_step_id": None}
 
         # Calculate step routing transition parameters
@@ -215,4 +234,16 @@ class OnboardingService:
 
         # FIX: Enforce systemic transaction level state version increments on EVERY step execution boundary pass
         self.repository.update_application_status(application.id, application.status.value, application.version)
+        SecurityAuditLogger.log_state_mutation(
+            application.id, "application_status", application.status.value, request_id
+        )
+        logger.info(
+            "step_submission_completed",
+            extra={
+                "request_id": request_id,
+                "application_id": application_id,
+                "step_id": step_id,
+                "outcome": application.status.value,
+            },
+        )
         return {"status": application.status.value, "next_step_id": next_step_id}

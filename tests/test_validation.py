@@ -66,3 +66,29 @@ def test_business_validation_rejects_bad_company_identifier_iban_and_ubo_count()
                 "largest_ownership_percent": "50",
             },
         )
+
+
+def test_required_confirmation_checkbox_must_be_checked():
+    step = flow_registry.get_flow("SWEDEN", "business").get_step_by_id("representative")
+
+    with pytest.raises(FormValidationError, match="Has Signatory Authority must be confirmed"):
+        validate_step_payload(
+            step,
+            "SWEDEN",
+            {
+                "representative_name": "Jane Example",
+                "representative_id": "199001011234",
+            },
+        )
+
+    clean = validate_step_payload(
+        step,
+        "SWEDEN",
+        {
+            "representative_name": "Jane Example",
+            "representative_id": "199001011234",
+            "has_signatory_authority": "true",
+        },
+    )
+
+    assert clean["has_signatory_authority"] is True

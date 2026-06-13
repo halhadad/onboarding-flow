@@ -1,7 +1,7 @@
 from typing import Dict, Any
 from domain.ports import ApplicationRepository
 from domain.flow_registry import flow_registry
-from domain.states import ApplicationStatus
+from domain.states import ApplicationStatus, TERMINAL_APPLICATION_STATUSES
 
 class ResumeApplicationError(Exception):
     pass
@@ -9,6 +9,18 @@ class ResumeApplicationError(Exception):
 class ResumeService:
     def __init__(self, repository: ApplicationRepository):
         self.repository = repository
+
+    def resume_by_token(self, resume_token: str) -> Dict[str, Any]:
+        context = self.repository.get_application_context_by_resume_token(resume_token)
+        if not context:
+            raise ResumeApplicationError("Resume token was not found.")
+        if context.get("resume_token_expired"):
+            raise ResumeApplicationError("Resume token has expired.")
+        return self.resume_session(
+            str(context["id"]),
+            str(context["country"]),
+            str(context["account_type"]),
+        )
 
     def resume_session(self, application_id: str, country: str, account_type: str) -> Dict[str, Any]:
         """
@@ -22,7 +34,7 @@ class ResumeService:
         status = ApplicationStatus(current_status_str)
 
         # Enforce state rules: Terminal statuses cannot mutate or resume
-        if status in [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+        if status in TERMINAL_APPLICATION_STATUSES:
             raise ResumeApplicationError(
                 f"Cannot resume session because application has reached a terminal state: {status.value}"
             )
@@ -42,6 +54,8 @@ class ResumeService:
 
         return {
             "application_id": application_id,
+            "country": country,
+            "account_type": account_type,
             "next_step_id": resume_step_id,
             "status": status.value
         }

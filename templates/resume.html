@@ -2,22 +2,21 @@
 {% block content %}
 <div class="bg-white shadow rounded-lg p-8 max-w-md mx-auto mt-12">
     <h2 class="text-2xl font-bold text-gray-800 mb-2">Resume Session</h2>
-    <p class="text-gray-600 text-sm mb-6">Enter the resume reference issued when you started the application.</p>
+    <p class="text-gray-600 text-sm mb-6">Continue an incomplete application saved on this device.</p>
 
     {% if error_message %}
     <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded text-sm text-red-700">
         {{ error_message }}
     </div>
-    {% endif %}
-    
-    <form action="/application/resume" method="POST" class="space-y-4">
-        <div>
-            <label class="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">Resume Reference</label>
-            <input type="text" name="application_id" required class="w-full border border-gray-300 rounded p-3 focus:ring-2 focus:ring-blue-500 outline-none">
-        </div>
+    <a href="/" class="block w-full bg-blue-600 hover:bg-blue-700 text-white text-center font-semibold p-3 rounded shadow transition-colors">
+        Start New Application
+    </a>
+    {% else %}
+    <form action="/application/resume" method="POST">
         <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold p-3 rounded shadow transition-colors">
-            Verify & Fetch Session
+            Continue Application
         </button>
     </form>
+    {% endif %}
 </div>
 {% endblock %}

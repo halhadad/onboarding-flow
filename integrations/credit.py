@@ -1,5 +1,6 @@
 import json
 from domain.ports import CreditBureauService, IntegrationResult
+from domain.states import CheckOutcome
 
 class MockCreditBureauService(CreditBureauService):
 
@@ -10,7 +11,7 @@ class MockCreditBureauService(CreditBureauService):
         if disposable_income <= 0:
             payload = {"disposable_income": disposable_income, "debt_flags": ["NEGATIVE_SURPLUS"], "score": 310}
             return IntegrationResult(
-                status_outcome="REJECTED",
+                status_outcome=CheckOutcome.REJECTED,
                 raw_response_json=json.dumps(payload)
             )
 
@@ -20,12 +21,12 @@ class MockCreditBureauService(CreditBureauService):
         if debt_to_income_ratio > 0.60:
             payload = {"disposable_income": disposable_income, "debt_flags": ["HIGH_LEVERAGE_RISK"], "score": 480}
             return IntegrationResult(
-                status_outcome="MANUAL_REVIEW",
+                status_outcome=CheckOutcome.MANUAL_REVIEW,
                 raw_response_json=json.dumps(payload)
             )
 
         payload = {"disposable_income": disposable_income, "debt_flags": [], "score": 780}
         return IntegrationResult(
-            status_outcome="APPROVED",
+            status_outcome=CheckOutcome.APPROVED,
             raw_response_json=json.dumps(payload)
         )

@@ -46,7 +46,7 @@
                 </select>
             {% elif field.field_type == 'boolean' %}
                 <div class="flex items-center space-x-3 mt-1">
-                    <input type="checkbox" name="{{ field.field_name }}" value="true" class="h-4 w-4 border-gray-300 rounded text-blue-600 focus:ring-blue-500">
+                    <input type="checkbox" name="{{ field.field_name }}" value="true" class="h-4 w-4 border-gray-300 rounded text-blue-600 focus:ring-blue-500" {% if field.requires_true %}required{% endif %}>
                     <span class="text-sm text-gray-600">Yes</span>
                 </div>
             {% endif %}

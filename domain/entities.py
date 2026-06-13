@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict, Any, List
-from domain.states import ApplicationStatus
+from domain.states import ApplicationStatus, TERMINAL_APPLICATION_STATUSES
 
 @dataclass
 class ApplicationEntity:
@@ -16,7 +16,7 @@ class ApplicationEntity:
         Enforces terminal state invariants. Once an application reaches 
         APPROVED, REJECTED, or MANUAL_REVIEW, no further changes are permitted.
         """
-        if self.status in [ApplicationStatus.APPROVED, ApplicationStatus.REJECTED, ApplicationStatus.MANUAL_REVIEW]:
+        if self.status in TERMINAL_APPLICATION_STATUSES:
             return False
         return True
 

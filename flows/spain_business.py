@@ -24,7 +24,7 @@ spain_business_flow = FlowConfig(
             fields=[
                 FormFieldConfig("representative_name", "text", True),
                 FormFieldConfig("representative_id", "text", True),
-                FormFieldConfig("has_signatory_authority", "boolean", True),
+                FormFieldConfig("has_signatory_authority", "boolean", True, requires_true=True),
             ],
             required_integrations=["identity", "representative"],
         ),

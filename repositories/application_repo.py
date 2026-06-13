@@ -1,8 +1,12 @@
 import json
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, cast
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from audit.log import SecurityAuditLogger
 from domain.ports import ApplicationRepository
+from domain.states import ApplicationStatus, CheckOutcome
 from db.models import ApplicationRecord, StepResponseRecord, IntegrationLogRecord
 
 class ConcurrentModificationError(Exception):
@@ -13,13 +17,25 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
     def __init__(self, session: Session):
         self.session = session
 
+    def _resume_token_expiry(self) -> datetime:
+        return datetime.now(timezone.utc) + timedelta(days=7)
+
+    def _is_expired(self, expires_at: Optional[datetime]) -> bool:
+        if expires_at is None:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= datetime.now(timezone.utc)
+
     def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> None:
         record = ApplicationRecord(
             id=application_id,
             country=country.upper(),
             account_type=account_type.lower(),
-            status="STARTED",
+            status=ApplicationStatus.STARTED.value,
             version=1,
+            resume_token=secrets.token_urlsafe(32),
+            resume_token_expires_at=self._resume_token_expiry(),
             request_id=request_id 
         )
         try:
@@ -95,15 +111,40 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             "account_type": record.account_type,
             "status": record.status,
             "version": record.version,
+            "resume_token": record.resume_token,
+            "resume_token_expires_at": record.resume_token_expires_at,
+            "resume_token_expired": self._is_expired(record.resume_token_expires_at),
+        }
+
+    def get_application_context_by_resume_token(self, resume_token: str) -> Optional[Dict[str, Any]]:
+        token = resume_token.strip()
+        if len(token) < 32 or len(token) > 128:
+            return None
+
+        record: Any = self.session.query(ApplicationRecord).filter(
+            ApplicationRecord.resume_token == token
+        ).first()
+        if not record:
+            return None
+        return {
+            "id": record.id,
+            "country": record.country,
+            "account_type": record.account_type,
+            "status": record.status,
+            "version": record.version,
+            "resume_token": record.resume_token,
+            "resume_token_expires_at": record.resume_token_expires_at,
+            "resume_token_expired": self._is_expired(record.resume_token_expires_at),
         }
 
     def update_application_status(self, application_id: str, status: str, current_version: int) -> None:
+        status_value = ApplicationStatus(status).value
         updated_rows = self.session.query(ApplicationRecord).filter(
             ApplicationRecord.id == application_id,
             ApplicationRecord.version == current_version
         ).update(
             {
-                ApplicationRecord.status: status,
+                ApplicationRecord.status: status_value,
                 ApplicationRecord.version: ApplicationRecord.version + 1
             },
             synchronize_session=False
@@ -157,17 +198,19 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             }
         return None
 
-    def log_integration_check(self, application_id: str, service_name: str, status_outcome: str, response_json: str, request_id: str) -> None:
+    def log_integration_check(self, application_id: str, service_name: str, status_outcome: CheckOutcome, response_json: str, request_id: str) -> None:
+        outcome_value = CheckOutcome(status_outcome).value
         log_entry = IntegrationLogRecord(
             application_id=application_id,
             service_name=service_name,
-            status_outcome=status_outcome,
+            status_outcome=outcome_value,
             raw_response_json=self._redact_integration_payload(response_json),
             request_id=request_id
         )
         try:
             self.session.add(log_entry)
             self.session.commit()
+            SecurityAuditLogger.log_integration_check(application_id, service_name, outcome_value, request_id)
         except Exception:
             self.session.rollback()
             raise

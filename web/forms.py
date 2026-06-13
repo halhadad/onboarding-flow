@@ -143,7 +143,10 @@ def validate_step_payload(step: FlowStep, country: str, form_data: Dict[str, Any
     for field in step.fields:
         raw_value = form_data.get(field.field_name)
         if field.field_type == "boolean":
-            clean[field.field_name] = _clean_text(raw_value).lower() in {"true", "on", "yes", "1"}
+            boolean_value = _clean_text(raw_value).lower() in {"true", "on", "yes", "1"}
+            if field.requires_true and not boolean_value:
+                raise FormValidationError(f"{field.field_name.replace('_', ' ').title()} must be confirmed.")
+            clean[field.field_name] = boolean_value
             continue
 
         text_value = _clean_text(raw_value)
