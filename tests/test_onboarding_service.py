@@ -8,6 +8,7 @@ from integrations.sanctions import MockSanctionsCheckService
 import pytest
 
 from services.onboarding_service import OnboardingService, StateTransitionError
+from services.integration_runner import IntegrationUnavailableError
 
 
 class InMemoryRepository:
@@ -85,6 +86,71 @@ def test_business_profile_runs_bank_account_after_approved_business_credit():
     assert ("bank_account", "MANUAL_REVIEW") in repository.integration_logs
 
 
+def test_affordability_decision_flows_through_the_engine():
+    # Negative disposable income must drive a REJECTED outcome decided by the
+    # AutomatedDecisionEngine (the credit mock only reports raw signals).
+    repository = InMemoryRepository()
+    for step_id in ("collect_identity", "confirm_contact", "regulatory_declarations"):
+        repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
+    service = OnboardingService(
+        repository=repository,
+        identity_service=MockIdentityVerificationService(),
+        sanctions_service=MockSanctionsCheckService(),
+        credit_service=MockCreditBureauService(),
+        registry_service=MockRegistryService(),
+        bank_account_service=MockBankAccountService(),
+    )
+
+    result = service.process_step_submission(
+        application_id="app-1",
+        country="SWEDEN",
+        account_type="private",
+        step_id="financial_profile",
+        form_data={"monthly_income": 1000.0, "monthly_expenses": 1200.0, "outstanding_debts": 0.0},
+        current_version=1,
+        request_id="req-1",
+    )
+
+    assert result == {"status": "REJECTED", "next_step_id": None}
+    assert ("credit_bureau", "REJECTED") in repository.integration_logs
+
+
+def test_transient_provider_failure_does_not_persist_or_manual_review():
+    # A provider outage must surface as a transient error, leave the step
+    # un-saved (so a retry re-runs it), and never park the application.
+    repository = InMemoryRepository()
+    for step_id in ("collect_identity", "confirm_contact", "regulatory_declarations"):
+        repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
+
+    class FailingCreditService:
+        def evaluate(self, *args, **kwargs):
+            raise ConnectionError("bureau unreachable")
+
+    service = OnboardingService(
+        repository=repository,
+        identity_service=MockIdentityVerificationService(),
+        sanctions_service=MockSanctionsCheckService(),
+        credit_service=FailingCreditService(),
+        registry_service=MockRegistryService(),
+        bank_account_service=MockBankAccountService(),
+    )
+
+    with pytest.raises(IntegrationUnavailableError):
+        service.process_step_submission(
+            application_id="app-1",
+            country="SWEDEN",
+            account_type="private",
+            step_id="financial_profile",
+            form_data={"monthly_income": 5000.0, "monthly_expenses": 1000.0, "outstanding_debts": 0.0},
+            current_version=1,
+            request_id="req-1",
+        )
+
+    assert ("app-1", "financial_profile") not in repository.responses
+    assert repository.status["app-1"] == "STARTED"
+    assert repository.integration_logs == []
+
+
 def test_service_rejects_step_skipping():
     repository = InMemoryRepository()
     service = OnboardingService(
@@ -123,7 +189,7 @@ def test_service_short_circuits_idempotent_repeat_submission():
         bank_account_service=MockBankAccountService(),
     )
     form_data = {"personal_identity_number": "199001011234"}
-    payload_hash = service._generate_payload_hash(form_data)
+    payload_hash = service._generate_idempotency_key(form_data)
     repository.responses[("app-1", "collect_identity")] = {
         "form_data": {"personal_identity_number": "***1234"},
         "payload_hash": payload_hash,
@@ -155,7 +221,7 @@ def test_service_rejects_terminal_application_mutation():
         bank_account_service=MockBankAccountService(),
     )
 
-    with pytest.raises(StateTransitionError, match="Terminal applications"):
+    with pytest.raises(StateTransitionError, match="can no longer be modified"):
         service.process_step_submission(
             application_id="app-1",
             country="SWEDEN",

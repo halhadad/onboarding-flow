@@ -1,14 +1,15 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from domain.ports import ApplicationRepository
-from domain.flow_registry import flow_registry
-from domain.states import ApplicationStatus, TERMINAL_APPLICATION_STATUSES
+from domain.flow_registry import FlowRegistry, flow_registry as default_flow_registry
+from domain.states import ApplicationStatus, is_customer_submittable
 
 class ResumeApplicationError(Exception):
     pass
 
 class ResumeService:
-    def __init__(self, repository: ApplicationRepository):
+    def __init__(self, repository: ApplicationRepository, registry: Optional[FlowRegistry] = None):
         self.repository = repository
+        self.flow_registry = registry or default_flow_registry
 
     def resume_by_token(self, resume_token: str) -> Dict[str, Any]:
         context = self.repository.get_application_context_by_resume_token(resume_token)
@@ -33,13 +34,14 @@ class ResumeService:
 
         status = ApplicationStatus(current_status_str)
 
-        # Enforce state rules: Terminal statuses cannot mutate or resume
-        if status in TERMINAL_APPLICATION_STATUSES:
+        # Customers can only resume an application that is still open for input.
+        # Terminal (APPROVED/REJECTED) and MANUAL_REVIEW states are not resumable.
+        if not is_customer_submittable(status):
             raise ResumeApplicationError(
-                f"Cannot resume session because application has reached a terminal state: {status.value}"
+                f"Cannot resume session because the application is no longer open for input: {status.value}"
             )
 
-        flow = flow_registry.get_flow(country, account_type)
+        flow = self.flow_registry.get_flow(country, account_type)
         
         resume_step_id = flow.steps[0].step_id
         for step in flow.steps:

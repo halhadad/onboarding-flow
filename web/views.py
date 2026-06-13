@@ -5,14 +5,16 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from web.dependencies import get_onboarding_service, get_application_repository
 from services.onboarding_service import OnboardingService, StateTransitionError
+from services.integration_runner import IntegrationUnavailableError
 from repositories.application_repo import ConcurrentModificationError, SQLAlchemyApplicationRepository
 from web.forms import FormValidationError, validate_step_payload
 from domain.flow_registry import FlowRegistryError, flow_registry
-from domain.states import TERMINAL_APPLICATION_STATUSES
+from domain.states import ApplicationStatus, TERMINAL_APPLICATION_STATUSES, is_customer_submittable
 from services.resume_service import ResumeService, ResumeApplicationError
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+templates.env.autoescape = True
 RESUME_COOKIE_NAME = "bank_onboarding_resume"
 RESUME_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
@@ -59,8 +61,10 @@ def _load_routable_application_context(
     if stored_country != country.upper() or stored_account_type != account_type.lower():
         raise HTTPException(status_code=403, detail="Application route does not match the stored onboarding journey.")
 
-    if str(app_context["status"]) in {status.value for status in TERMINAL_APPLICATION_STATUSES}:
-        raise HTTPException(status_code=409, detail="This application has already reached a final decision.")
+    # Single shared gate with the service layer: only STARTED / IN_PROGRESS
+    # applications accept customer routing (MANUAL_REVIEW is parked with a reviewer).
+    if not is_customer_submittable(ApplicationStatus(str(app_context["status"]))):
+        raise HTTPException(status_code=409, detail="This application is no longer open for customer input.")
 
     if not resume_token:
         raise HTTPException(status_code=403, detail="This application session is not available on this device.")
@@ -208,6 +212,58 @@ async def render_step_view(
         }
     )
 
+@router.get("/application/{application_id}/review", response_class=HTMLResponse)
+async def review_view(
+    request: Request,
+    application_id: str,
+    country: str,
+    type: str,
+    repository: SQLAlchemyApplicationRepository = Depends(get_application_repository),
+):
+    """Read-only summary of everything captured so far (already redacted), plus
+    which steps remain. Values are rendered through Jinja's native autoescaping
+    as plain field/value pairs — never as a raw serialized blob."""
+    app_context = _load_routable_application_context(
+        repository,
+        application_id,
+        country,
+        type,
+        request.cookies.get(RESUME_COOKIE_NAME),
+    )
+    stored_country = str(app_context["country"])
+    stored_account_type = str(app_context["account_type"])
+
+    try:
+        flow = flow_registry.get_flow(stored_country, stored_account_type)
+    except FlowRegistryError as err:
+        raise HTTPException(status_code=400, detail="Unsupported onboarding flow.") from err
+
+    saved_responses = repository.get_all_step_responses(application_id)
+    review_steps = []
+    for step in flow.steps:
+        response = saved_responses.get(step.step_id)
+        review_steps.append({
+            "title": step.title,
+            "step_id": step.step_id,
+            "completed": response is not None,
+            "fields": [
+                {"label": key.replace("_", " "), "value": value}
+                for key, value in (response or {}).items()
+            ],
+        })
+
+    return templates.TemplateResponse(
+        request,
+        "review.html",
+        {
+            "application_id": application_id,
+            "country": stored_country,
+            "type": stored_account_type,
+            "review_steps": review_steps,
+        },
+    )
+
+
 @router.post("/application/{application_id}/step/{step_id}", response_class=HTMLResponse)
 async def submit_step_view(
     request: Request,
@@ -299,7 +355,25 @@ async def submit_step_view(
             },
             status_code=409,
         )
-    
+    except IntegrationUnavailableError:
+        # Transient provider outage: the step was NOT saved, so the customer can
+        # simply resubmit. We do not park them in manual review. In production
+        # this is where automatic retry/backoff and a circuit breaker would sit.
+        return templates.TemplateResponse(
+            request,
+            "step.html",
+            {
+                "application_id": application_id,
+                "step": step_config,
+                "country": stored_country,
+                "type": stored_account_type,
+                "version": current_version,
+                "error_message": "A verification service is temporarily unavailable. Please submit again in a moment.",
+                **_progress_context(flow, step_id),
+            },
+            status_code=503,
+        )
+
     status_outcome = result["status"]
     next_step_id = result["next_step_id"]
 

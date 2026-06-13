@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 from domain.states import CheckOutcome
+from domain.decisioning import CreditAssessment, SanctionsScreening
 
 @dataclass(frozen=True)
 class IntegrationResult:
@@ -54,6 +55,11 @@ class ApplicationRepository(ABC):
         pass
 
     @abstractmethod
+    def get_all_step_responses(self, application_id: str) -> Dict[str, Dict[str, Any]]:
+        """Retrieves every saved (already redacted) step response, keyed by step id."""
+        pass
+
+    @abstractmethod
     def log_integration_check(self, application_id: str, service_name: str, status_outcome: CheckOutcome, response_json: str, request_id: str) -> None:
         """Appends an execution log record to the immutable audit ledger."""
         pass
@@ -67,14 +73,20 @@ class IdentityVerificationService(ABC):
 
 class SanctionsCheckService(ABC):
     @abstractmethod
-    def check(self, tax_residency: str, is_pep: bool) -> IntegrationResult:
-        """Executes compliance, tax residency, and Politically Exposed Person validations."""
+    def check(self, tax_residency: str, is_pep: bool) -> SanctionsScreening:
+        """Screens against sanctions / PEP lists and returns the raw signals.
+
+        The verdict is left to the decision engine.
+        """
         pass
 
 class CreditBureauService(ABC):
     @abstractmethod
-    def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> IntegrationResult:
-        """Evaluates financial risk profile parameters and affordability logic."""
+    def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> CreditAssessment:
+        """Returns raw affordability signals (score, surplus, leverage, flags).
+
+        The verdict is left to the decision engine.
+        """
         pass
 
 

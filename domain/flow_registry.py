@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 from domain.flow import FlowConfig
 from flows.sweden_individual import sweden_individual_flow
 from flows.sweden_business import sweden_business_flow
@@ -25,6 +25,9 @@ class FlowRegistry:
                 f"No flow configured for country {country} and account type {account_type}"
             )
         return self._registry[key]
+
+    def all_flows(self) -> List[FlowConfig]:
+        return list(self._registry.values())
 
 # Instantiated global lookup registry
 flow_registry = FlowRegistry()

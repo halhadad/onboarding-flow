@@ -10,6 +10,7 @@ from web.middleware import BankingSecurityAuditMiddleware
 from web.views import router as web_router
 
 templates = Jinja2Templates(directory="templates")
+templates.env.autoescape = True
 configure_logging()
 logger = logging.getLogger("onboarding.app")
 

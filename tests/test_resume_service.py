@@ -77,10 +77,10 @@ def test_resume_by_token_rejects_expired_token():
         service.resume_by_token("expired-token-with-enough-entropy-123")
 
 
-def test_resume_by_token_rejects_terminal_application():
+def test_resume_by_token_rejects_application_parked_in_manual_review():
     repository = ResumeRepository()
     repository.status["app-1"] = "MANUAL_REVIEW"
     service = ResumeService(repository)
 
-    with pytest.raises(ResumeApplicationError, match="terminal"):
+    with pytest.raises(ResumeApplicationError, match="no longer open for input"):
         service.resume_by_token("valid-token-with-enough-entropy-123456")

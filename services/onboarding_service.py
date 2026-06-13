@@ -1,22 +1,22 @@
-import json
 import hashlib
-import hmac
+import json
 import logging
-from typing import Callable, Dict, Any
-from config import settings
+from typing import Any, Dict, Optional
+
 from audit.log import SecurityAuditLogger
+from domain.decisioning import AutomatedDecisionEngine
 from domain.ports import (
-    ApplicationRepository, 
-    IdentityVerificationService, 
-    SanctionsCheckService, 
+    ApplicationRepository,
+    IdentityVerificationService,
+    SanctionsCheckService,
     CreditBureauService,
     RegistryLookupService,
     BankAccountValidationService,
-    IntegrationResult,
 )
-from domain.flow_registry import flow_registry
+from domain.flow_registry import FlowRegistry, flow_registry as default_flow_registry
 from domain.entities import ApplicationEntity
-from domain.states import ApplicationStatus, CheckOutcome, TERMINAL_APPLICATION_STATUSES
+from domain.states import ApplicationStatus, CheckOutcome, is_customer_submittable
+from services.integration_runner import IntegrationRunner
 
 
 class StateTransitionError(Exception):
@@ -25,7 +25,15 @@ class StateTransitionError(Exception):
 
 logger = logging.getLogger("onboarding.service")
 
+
 class OnboardingService:
+    """Orchestrates one step submission: guards state, runs the step's checks
+    via the IntegrationRunner, persists results, and advances the application.
+
+    It does not know *how* a provider is called (that's the runner) nor *how*
+    a signal becomes a decision (that's the engine) — it just sequences them.
+    """
+
     def __init__(
         self,
         repository: ApplicationRepository,
@@ -33,43 +41,31 @@ class OnboardingService:
         sanctions_service: SanctionsCheckService,
         credit_service: CreditBureauService,
         registry_service: RegistryLookupService,
-        bank_account_service: BankAccountValidationService
+        bank_account_service: BankAccountValidationService,
+        decision_engine: Optional[AutomatedDecisionEngine] = None,
+        registry: Optional[FlowRegistry] = None,
     ):
         self.repository = repository
-        self.identity_service = identity_service
-        self.sanctions_service = sanctions_service
-        self.credit_service = credit_service
-        self.registry_service = registry_service
-        self.bank_account_service = bank_account_service
-        self.integration_handlers: Dict[str, Callable[[str, Dict[str, Any], str], IntegrationResult]] = {
-            "identity": self._run_identity_check,
-            "address_lookup": self._run_address_lookup,
-            "sanctions": self._run_sanctions_check,
-            "credit_bureau": self._run_credit_bureau_check,
-            "registry": self._run_registry_check,
-            "representative": self._run_representative_check,
-            "ubo_kyc": self._run_ubo_kyc_check,
-            "business_credit": self._run_business_credit_check,
-            "bank_account": self._run_bank_account_check,
-        }
+        self.flow_registry = registry or default_flow_registry
+        self.decision_engine = decision_engine or AutomatedDecisionEngine()
+        self.integration_runner = IntegrationRunner(
+            identity_service=identity_service,
+            sanctions_service=sanctions_service,
+            credit_service=credit_service,
+            registry_service=registry_service,
+            bank_account_service=bank_account_service,
+            decision_engine=self.decision_engine,
+        )
 
-    def _generate_payload_hash(self, form_data: Dict[str, Any]) -> str:
-        """Generates a keyed digest so low-entropy identifiers are not exposed to offline guessing."""
-        serialized = json.dumps(form_data, sort_keys=True)
-        return hmac.new(
-            settings.ONBOARDING_INTERNAL_SECRET.encode("utf-8"),
-            serialized.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-
-    def _money_band(self, value: float) -> str:
-        if value < 1000:
-            return "below_1000"
-        if value < 3000:
-            return "1000_2999"
-        if value < 10000:
-            return "3000_9999"
-        return "10000_plus"
+    def _generate_idempotency_key(self, form_data: Dict[str, Any]) -> str:
+        """
+        Plain SHA-256 digest of the submitted payload, used only to detect that
+        a step was re-submitted unchanged so we can skip re-running its checks.
+        It is a change-detection fingerprint, not a security signature, so it
+        needs no secret/HMAC — that would be ceremony without a threat to defend.
+        """
+        normalised = json.dumps(form_data, sort_keys=True)
+        return hashlib.sha256(normalised.encode()).hexdigest()
 
     def _assert_step_is_reachable(self, application_id: str, flow, step_id: str) -> None:
         requested_index = next(
@@ -85,70 +81,6 @@ class OnboardingService:
                     f"Step '{step_id}' cannot be submitted before completing '{previous_step.step_id}'."
                 )
 
-    def _run_identity_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        pin = form_data.get("personal_identity_number") or form_data.get("representative_id", "")
-        return self.identity_service.verify(str(pin))
-
-    def _run_address_lookup(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        return IntegrationResult(
-            status_outcome=CheckOutcome.APPROVED,
-            raw_response_json=json.dumps({"address_confidence": 0.92, "status": "FETCHED"}),
-        )
-
-    def _run_sanctions_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        is_pep = bool(form_data.get("is_pep"))
-        tax_residency = str(form_data.get("tax_residency", ""))
-        return self.sanctions_service.check(tax_residency, is_pep)
-
-    def _run_credit_bureau_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        try:
-            income = float(form_data.get("monthly_income", 0))
-            expenses = float(form_data.get("monthly_expenses", 0))
-            debts = float(form_data.get("outstanding_debts", 0))
-        except (TypeError, ValueError) as err:
-            raise ValueError("Financial inputs must be numeric.") from err
-        return self.credit_service.evaluate(income, expenses, debts)
-
-    def _run_registry_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        return self.registry_service.lookup_entity(str(form_data.get("company_identifier", "")))
-
-    def _run_representative_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        has_authority = bool(form_data.get("has_signatory_authority"))
-        payload = {"authority": "confirmed" if has_authority else "missing_or_unconfirmed"}
-        return IntegrationResult(
-            status_outcome=CheckOutcome.APPROVED if has_authority else CheckOutcome.MANUAL_REVIEW,
-            raw_response_json=json.dumps(payload),
-        )
-
-    def _run_ubo_kyc_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        ubo_count = float(form_data.get("ubo_count", 0))
-        largest_ownership = float(form_data.get("largest_ownership_percent", 0))
-        if ubo_count <= 0:
-            return IntegrationResult(CheckOutcome.REJECTED, json.dumps({"ubo_status": "missing_ubo"}))
-        if largest_ownership >= 75:
-            return IntegrationResult(CheckOutcome.MANUAL_REVIEW, json.dumps({"ubo_status": "concentrated_ownership"}))
-        return IntegrationResult(CheckOutcome.APPROVED, json.dumps({"ubo_status": "verified"}))
-
-    def _run_business_credit_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        turnover = float(form_data.get("annual_turnover", 0))
-        monthly_volume = float(form_data.get("expected_monthly_volume", 0))
-        sector = str(form_data.get("sector", "")).lower()
-        if turnover <= 0:
-            outcome = CheckOutcome.REJECTED
-            payload = {"business_credit": "no_turnover"}
-        elif sector == "financial_services" or monthly_volume > turnover:
-            outcome = CheckOutcome.MANUAL_REVIEW
-            payload = {"business_credit": "enhanced_due_diligence"}
-        else:
-            outcome = CheckOutcome.APPROVED
-            payload = {"business_credit": "acceptable"}
-        payload["turnover_band"] = self._money_band(turnover)
-        payload["monthly_volume_band"] = self._money_band(monthly_volume)
-        return IntegrationResult(outcome, json.dumps(payload))
-
-    def _run_bank_account_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        return self.bank_account_service.validate_iban(str(form_data.get("iban", "")))
-
     def process_step_submission(
         self,
         application_id: str,
@@ -160,10 +92,11 @@ class OnboardingService:
         request_id: str
     ) -> Dict[str, Any]:
         """
-        Orchestrates step progression logic using pure domain models. Reconstructs the application entity,
-        evaluates risk matrices via the automated decision engine, and tracks concurrency protection.
+        Orchestrates step progression using pure domain models. Reconstructs the
+        application entity, runs the step's required checks, and advances state
+        under optimistic concurrency control.
         """
-        flow = flow_registry.get_flow(country, account_type)
+        flow = self.flow_registry.get_flow(country, account_type)
         step_config = flow.get_step_by_id(step_id)
         if not step_config:
             raise ValueError(f"Step {step_id} does not map to this specific application configuration workflow.")
@@ -191,48 +124,59 @@ class OnboardingService:
             version=current_version
         )
 
-        if application.status in TERMINAL_APPLICATION_STATUSES:
-            raise StateTransitionError("Terminal applications cannot be changed.")
+        # Single gate shared with the web layer: only STARTED / IN_PROGRESS
+        # applications accept customer input. This covers terminal states as
+        # well as MANUAL_REVIEW (parked with a human reviewer).
+        if not is_customer_submittable(application.status):
+            raise StateTransitionError(
+                f"This application can no longer be modified by the applicant (status: {application.status.value})."
+            )
 
         self._assert_step_is_reachable(application_id, flow, step_id)
 
         existing_response = self.repository.get_step_response(application_id, step_id)
-        current_hash = self._generate_payload_hash(form_data)
-        
+        current_hash = self._generate_idempotency_key(form_data)
+
         if existing_response and existing_response.get("payload_hash") == current_hash:
             next_step_id = flow.get_next_step_id(step_id)
             return {"status": application.status.value, "next_step_id": next_step_id}
 
-        # Persist the validated step payload before external checks so resumability and support state stay coherent.
-        self.repository.save_step_response(application_id, step_id, form_data, current_hash)
-
-        # Evaluate platform integrations through explicit handlers so flow config stays declarative.
+        # Run the step's checks FIRST. If a provider is transiently unavailable
+        # the runner raises IntegrationUnavailableError, which propagates out
+        # before anything is persisted — so the step is not marked complete and
+        # a retry re-runs it (it does not get parked in manual review).
+        adverse_result = None
+        results = []
         for integration in step_config.required_integrations:
-            handler = self.integration_handlers.get(integration)
-            if handler is None:
-                raise ValueError(f"No integration handler registered for '{integration}'.")
+            result = self.integration_runner.run(integration, application_id, form_data, request_id)
+            results.append((integration, result))
+            if result.status_outcome in {CheckOutcome.REJECTED, CheckOutcome.MANUAL_REVIEW}:
+                adverse_result = result
+                break  # stop at the first adverse outcome
 
-            result = handler(application_id, form_data, request_id)
+        # Checks completed without a transient failure — now persist the step,
+        # the audit log entries, and the resulting status atomically-ish.
+        self.repository.save_step_response(application_id, step_id, form_data, current_hash)
+        for integration, result in results:
             self.repository.log_integration_check(
                 application_id, integration, result.status_outcome, result.raw_response_json, request_id
             )
 
-            if result.status_outcome in {CheckOutcome.REJECTED, CheckOutcome.MANUAL_REVIEW}:
-                application.transition_status(ApplicationStatus(result.status_outcome.value))
-                self.repository.update_application_status(application.id, application.status.value, application.version)
-                SecurityAuditLogger.log_state_mutation(
-                    application.id, "application_status", application.status.value, request_id
-                )
-                return {"status": application.status.value, "next_step_id": None}
+        if adverse_result is not None:
+            application.transition_status(ApplicationStatus(adverse_result.status_outcome.value))
+            self.repository.update_application_status(application.id, application.status.value, application.version)
+            SecurityAuditLogger.log_state_mutation(
+                application.id, "application_status", application.status.value, request_id
+            )
+            return {"status": application.status.value, "next_step_id": None}
 
-        # Calculate step routing transition parameters
+        # All checks passed: advance to the next step, or approve if this was the last.
         next_step_id = flow.get_next_step_id(step_id)
         if next_step_id is None:
             application.transition_status(ApplicationStatus.APPROVED)
         else:
             application.transition_status(ApplicationStatus.IN_PROGRESS)
 
-        # FIX: Enforce systemic transaction level state version increments on EVERY step execution boundary pass
         self.repository.update_application_status(application.id, application.status.value, application.version)
         SecurityAuditLogger.log_state_mutation(
             application.id, "application_status", application.status.value, request_id

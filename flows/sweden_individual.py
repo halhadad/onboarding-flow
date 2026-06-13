@@ -1,81 +1,50 @@
 from domain.flow import FlowConfig, FlowStep, FormFieldConfig
+from domain.enums import AccountType, Country, IntegrationName, PiiCategory
+from domain.countries import TAX_RESIDENCY_OPTIONS
 
 sweden_individual_flow = FlowConfig(
-    country="SWEDEN",
-    account_type="private",
+    country=Country.SWEDEN,
+    account_type=AccountType.PRIVATE,
     steps=[
         FlowStep(
             step_id="collect_identity",
             title="Identity Verification",
             description="Please enter your Swedish personal identity number to initiate verification via BankID.",
             fields=[
-                FormFieldConfig(
-                    field_name="personal_identity_number",
-                    field_type="text",
-                    is_required=True
-                )
+                FormFieldConfig("personal_identity_number", "text", True, pii_category=PiiCategory.NATIONAL_ID),
             ],
-            required_integrations=["identity"]
+            required_integrations=[IntegrationName.IDENTITY],
         ),
         FlowStep(
             step_id="confirm_contact",
             title="Contact Details",
             description="Verify your current residential address and telephone information.",
             fields=[
-                FormFieldConfig(
-                    field_name="address",
-                    field_type="text",
-                    is_required=True
-                ),
-                FormFieldConfig(
-                    field_name="phone_number",
-                    field_type="text",
-                    is_required=True
-                )
+                FormFieldConfig("address", "text", True, pii_category=PiiCategory.ADDRESS),
+                FormFieldConfig("phone_number", "text", True, pii_category=PiiCategory.PHONE),
             ],
-            required_integrations=["address_lookup"]
+            required_integrations=[IntegrationName.ADDRESS_LOOKUP],
         ),
         FlowStep(
             step_id="regulatory_declarations",
             title="Regulatory Declarations",
             description="Provide necessary compliance, tax residency, and Politically Exposed Person status declarations.",
             fields=[
-                FormFieldConfig(
-                    field_name="is_pep",
-                    field_type="boolean",
-                    is_required=True
-                ),
-                FormFieldConfig(
-                    field_name="tax_residency",
-                    field_type="select",
-                    is_required=True,
-                    options=["SE", "ES", "PL"]
-                )
+                FormFieldConfig("is_pep", "boolean", True),
+                FormFieldConfig("tax_residency", "select", True, TAX_RESIDENCY_OPTIONS),
             ],
-            required_integrations=["sanctions"]
+            required_integrations=[IntegrationName.SANCTIONS],
         ),
         FlowStep(
             step_id="financial_profile",
             title="Financial Profile",
             description="Please provide details regarding your monthly employment income, expenses, and outstanding liabilities.",
             fields=[
-                FormFieldConfig(
-                    field_name="monthly_income",
-                    field_type="number",
-                    is_required=True
-                ),
-                FormFieldConfig(
-                    field_name="monthly_expenses",
-                    field_type="number",
-                    is_required=True
-                ),
-                FormFieldConfig(
-                    field_name="outstanding_debts",
-                    field_type="number",
-                    is_required=True
-                )
+                FormFieldConfig("monthly_income", "number", True),
+                FormFieldConfig("monthly_expenses", "number", True),
+                FormFieldConfig("outstanding_debts", "number", True),
             ],
-            required_integrations=["credit_bureau"]
-        )
-    ]
+            required_integrations=[IntegrationName.CREDIT_BUREAU],
+        ),
+    ],
 )

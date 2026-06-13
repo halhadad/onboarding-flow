@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
+from domain.enums import PiiCategory
+
 @dataclass(frozen=True)
 class FormFieldConfig:
     field_name: str
@@ -8,9 +10,17 @@ class FormFieldConfig:
     is_required: bool
     options: Sequence[str] = field(default_factory=tuple)
     requires_true: bool = False
+    # When set, this field carries PII. It drives log redaction (and, in
+    # production, field-level encryption). Driven by the flow schema itself, so
+    # marking a field sensitive cannot silently bypass redaction.
+    pii_category: Optional[PiiCategory] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "options", tuple(self.options))
+
+    @property
+    def is_sensitive(self) -> bool:
+        return self.pii_category is not None
 
 @dataclass(frozen=True)
 class FlowStep:

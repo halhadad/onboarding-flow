@@ -1,32 +1,29 @@
-import json
-from domain.ports import CreditBureauService, IntegrationResult
-from domain.states import CheckOutcome
+from domain.ports import CreditBureauService
+from domain.decisioning import CreditAssessment
+
 
 class MockCreditBureauService(CreditBureauService):
+    """Deterministic stand-in for a credit bureau / affordability provider.
 
-    def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> IntegrationResult:
+    It only *reports* signals (a synthetic score, disposable income, leverage
+    and flags). It does not decide the application — that is the decision
+    engine's job, so the policy lives in exactly one place.
+    """
+
+    def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> CreditAssessment:
         disposable_income = monthly_income - monthly_expenses
-        
-        # Immediate rejection if the basic net household balance is underwater
+        debt_to_income_ratio = outstanding_debts / monthly_income if monthly_income > 0 else 0.0
+
         if disposable_income <= 0:
-            payload = {"disposable_income": disposable_income, "debt_flags": ["NEGATIVE_SURPLUS"], "score": 310}
-            return IntegrationResult(
-                status_outcome=CheckOutcome.REJECTED,
-                raw_response_json=json.dumps(payload)
-            )
+            score, flags = 310, ("NEGATIVE_SURPLUS",)
+        elif debt_to_income_ratio > 0.60:
+            score, flags = 480, ("HIGH_LEVERAGE_RISK",)
+        else:
+            score, flags = 780, ()
 
-        # Calculate a basic debt-to-income metric
-        debt_to_income_ratio = outstanding_debts / monthly_income if monthly_income > 0 else 0
-
-        if debt_to_income_ratio > 0.60:
-            payload = {"disposable_income": disposable_income, "debt_flags": ["HIGH_LEVERAGE_RISK"], "score": 480}
-            return IntegrationResult(
-                status_outcome=CheckOutcome.MANUAL_REVIEW,
-                raw_response_json=json.dumps(payload)
-            )
-
-        payload = {"disposable_income": disposable_income, "debt_flags": [], "score": 780}
-        return IntegrationResult(
-            status_outcome=CheckOutcome.APPROVED,
-            raw_response_json=json.dumps(payload)
+        return CreditAssessment(
+            score=score,
+            disposable_income=disposable_income,
+            debt_to_income_ratio=round(debt_to_income_ratio, 4),
+            flags=flags,
         )

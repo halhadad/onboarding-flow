@@ -18,8 +18,10 @@ flowchart TD
     Web[web/ FastAPI routes and middleware]
     Forms[web/forms.py validation]
     Service[services/ OnboardingService and ResumeService]
+    Runner[services/ IntegrationRunner]
+    Decision[domain/ AutomatedDecisionEngine]
     Flow[flows/ and domain/flow_registry.py]
-    Domain[domain/ entities, states, ports, decisioning]
+    Domain[domain/ entities, states, ports]
     Integrations[integrations/ deterministic mock clients]
     Repo[repositories/ SQLAlchemy repository]
     DB[(SQLite database)]
@@ -31,12 +33,16 @@ flowchart TD
     Web --> Service
     Service --> Flow
     Service --> Domain
-    Service --> Integrations
+    Service --> Runner
+    Runner --> Integrations
+    Runner --> Decision
     Service --> Repo
     Repo --> DB
     Web --> Logs
     Service --> Logs
 ```
+
+`OnboardingService` sequences a step. `IntegrationRunner` calls the mock providers and, for credit and sanctions, hands their raw signals to `AutomatedDecisionEngine`, which is the single place a decision (approve/refer/reject) is made.
 
 ## Request Flow
 
@@ -44,39 +50,35 @@ flowchart TD
 2. The web route creates an application record and redirects to the first configured step.
 3. Each step is rendered from `FlowConfig` and `FormFieldConfig`.
 4. Submitted form data is validated server-side.
-5. `OnboardingService` checks that the step is reachable and the application is not terminal.
-6. The step response is redacted for storage and hashed with HMAC-SHA256 for idempotency/change detection.
-7. Required mocked integrations are executed for that step.
+5. `OnboardingService` checks that the step is reachable and that the application is still open for customer input (`is_customer_submittable` — the same gate the web layer uses, so the two cannot drift).
+6. The step response is redacted (driven by the flow schema) for storage and hashed with HMAC-SHA256 for idempotency/change detection.
+7. The step's required checks are executed by `IntegrationRunner`; credit and sanctions signals are turned into a decision by `AutomatedDecisionEngine`.
 8. Integration outcomes are persisted to `integration_logs`.
 9. The application status moves to `IN_PROGRESS`, `APPROVED`, `MANUAL_REVIEW` or `REJECTED`.
-10. A server-issued resume handle is stored in an HTTP-only cookie so `/resume` can return incomplete applications to the first incomplete step without showing the handle to the customer.
+10. A server-issued resume handle is stored in an HTTP-only cookie so `/resume` can return incomplete applications to the first incomplete step without showing the handle to the customer. A read-only `/review` screen summarises captured (redacted) data and remaining steps.
 
 ## Main Modules
 
 - `web/`: HTTP routes, middleware, dependency wiring and form validation entry points.
 - `templates/`: Server-rendered pages for start, step, resume and decision views.
 - `flows/`: Declarative country and account-type journey definitions.
-- `domain/`: Flow models, entity/status models, ports and simple decisioning rules.
-- `services/`: Application use cases: step submission and resumability.
-- `integrations/`: Deterministic mock clients for identity, sanctions, credit, registry and bank account checks.
+- `domain/`: Flow models, entity/status models, ports and the `AutomatedDecisionEngine`.
+- `services/`: Application use cases (step submission, resumability) and the `IntegrationRunner`.
+- `integrations/`: Deterministic mock clients for identity, sanctions, credit, registry and bank account checks. Credit and sanctions return raw signals; other checks return their own outcome.
 - `repositories/`: SQLAlchemy implementation of the persistence port.
 - `db/`: ORM records and database session setup.
 - `audit/`: Structured logging helpers.
 
 ## Current Tradeoffs
 
-The current design keeps a single `OnboardingService` because the sample is small and the full workflow is easier to read in one place. In a larger production system, this would likely be split into use-case handlers and focused collaborators:
+Provider plumbing (`IntegrationRunner`) and decision policy (`AutomatedDecisionEngine`) are already separated from `OnboardingService`, which keeps the service focused on sequencing a step. The remaining concerns still inside the service are deliberately left together because the sample is small; in a larger system they would be split the same way, around reasons to change:
 
-- `SubmitStepHandler`
-- `FlowResolver`
-- `StepAccessPolicy`
-- `StepResponseService`
-- `CheckOrchestrator`
-- `DecisionService`
-- `ApplicationStateService`
-- `AuditService`
+- `StepAccessPolicy` — step reachability and submittable-state checks.
+- `StepResponseService` — redaction, hashing, idempotency.
+- `ApplicationStateService` — state transitions and optimistic concurrency.
+- `AuditService` — durable audit events.
 
-The service is therefore a deliberate take-home simplification, not the final production boundary.
+That remaining grouping is a deliberate take-home simplification, not the final production boundary.
 
 ## Production Direction
 

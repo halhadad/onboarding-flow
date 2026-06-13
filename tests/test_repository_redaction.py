@@ -1,30 +1,10 @@
 import json
 
-from repositories.application_repo import SQLAlchemyApplicationRepository
+from services.pii import redact_integration_payload
 
 
-def test_step_response_redacts_direct_identifiers():
-    repository = SQLAlchemyApplicationRepository(session=None)
-
-    redacted = repository._redact_form_data(
-        {
-            "personal_identity_number": "199001011234",
-            "address": "Main Street 12",
-            "phone_number": "+46701234567",
-            "monthly_income": 5000,
-        }
-    )
-
-    assert redacted["personal_identity_number"] == "***1234"
-    assert redacted["address"] == "***t 12"
-    assert redacted["phone_number"] == "***4567"
-    assert redacted["monthly_income"] == 5000
-
-
-def test_integration_payload_redacts_sensitive_fields():
-    repository = SQLAlchemyApplicationRepository(session=None)
-
-    payload = repository._redact_integration_payload(
+def test_integration_payload_redacts_sensitive_keys():
+    payload = redact_integration_payload(
         json.dumps(
             {
                 "income": 5000,
@@ -41,3 +21,28 @@ def test_integration_payload_redacts_sensitive_fields():
         "outcome": "APPROVED",
         "tax_residency": "***",
     }
+
+
+def test_integration_payload_redacts_nested_and_listed_sensitive_fields():
+    # A real provider can bury PII inside nested objects/lists; the redaction
+    # must walk the whole structure, not just the root keys.
+    payload = redact_integration_payload(
+        json.dumps(
+            {
+                "status": "COMPLETED",
+                "applicant_profile": {
+                    "personal_identity_number": "199001011234",
+                    "monthly_income": 45000,
+                    "city": "Stockholm",
+                },
+                "accounts": [{"iban": "SE1234"}],
+            }
+        )
+    )
+
+    result = json.loads(payload)
+    assert result["status"] == "COMPLETED"
+    assert result["applicant_profile"]["personal_identity_number"] == "***"
+    assert result["applicant_profile"]["monthly_income"] == "***"
+    assert result["applicant_profile"]["city"] == "Stockholm"
+    assert result["accounts"][0]["iban"] == "***"

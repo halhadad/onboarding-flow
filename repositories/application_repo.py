@@ -5,9 +5,11 @@ from typing import Dict, Any, Optional, cast
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from audit.log import SecurityAuditLogger
+from services.pii import redact_integration_payload
 from domain.ports import ApplicationRepository
 from domain.states import ApplicationStatus, CheckOutcome
 from db.models import ApplicationRecord, StepResponseRecord, IntegrationLogRecord
+
 
 class ConcurrentModificationError(Exception):
     """Raised when an optimistic concurrency version check fails."""
@@ -46,52 +48,6 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             # Explicitly expunge the failed object from session memory
             self.session.expunge_all() 
             raise ValueError(f"Application session with ID {application_id} already exists.")
-
-    def _redact_form_data(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
-        redacted = dict(form_data)
-        for key in [
-            "personal_identity_number",
-            "representative_id",
-            "company_identifier",
-            "iban",
-            "address",
-            "phone_number",
-        ]:
-            if key in redacted:
-                value = str(redacted[key])
-                redacted[key] = f"***{value[-4:]}" if len(value) >= 4 else "***"
-        return redacted
-
-    def _redact_integration_payload(self, response_json: str) -> str:
-        sensitive_keys = {
-            "personal_identity_number",
-            "representative_id",
-            "company_identifier",
-            "iban",
-            "address",
-            "phone_number",
-            "income",
-            "expenses",
-            "debts",
-            "monthly_income",
-            "monthly_expenses",
-            "outstanding_debts",
-            "tax_residency",
-            "is_pep",
-        }
-        try:
-            payload = json.loads(response_json)
-        except json.JSONDecodeError:
-            return "{}"
-
-        if not isinstance(payload, dict):
-            return "{}"
-
-        redacted = {
-            key: "***" if key in sensitive_keys else value
-            for key, value in payload.items()
-        }
-        return json.dumps(redacted, sort_keys=True)
 
     def get_application_status(self, application_id: str) -> Optional[str]:
         record: Any = self.session.query(ApplicationRecord).filter(ApplicationRecord.id == application_id).first()
@@ -159,7 +115,9 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
         self.session.commit()
 
     def save_step_response(self, application_id: str, step_id: str, form_data: Dict[str, Any], payload_hash: str) -> None:
-        serialized_data = json.dumps(self._redact_form_data(form_data), sort_keys=True)
+        # Stored as entered — the bank needs to read this back. Protection at
+        # rest (encryption/access control) is a production concern, see README.
+        serialized_data = json.dumps(form_data, sort_keys=True)
         record: Any = self.session.query(StepResponseRecord).filter(
             StepResponseRecord.application_id == application_id,
             StepResponseRecord.step_id == step_id
@@ -198,13 +156,19 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             }
         return None
 
+    def get_all_step_responses(self, application_id: str) -> Dict[str, Dict[str, Any]]:
+        records = self.session.query(StepResponseRecord).filter(
+            StepResponseRecord.application_id == application_id
+        ).order_by(StepResponseRecord.completed_at).all()
+        return {record.step_id: json.loads(record.form_data_json) for record in records}
+
     def log_integration_check(self, application_id: str, service_name: str, status_outcome: CheckOutcome, response_json: str, request_id: str) -> None:
         outcome_value = CheckOutcome(status_outcome).value
         log_entry = IntegrationLogRecord(
             application_id=application_id,
             service_name=service_name,
             status_outcome=outcome_value,
-            raw_response_json=self._redact_integration_payload(response_json),
+            raw_response_json=redact_integration_payload(response_json),
             request_id=request_id
         )
         try:
