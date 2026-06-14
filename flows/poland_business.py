@@ -50,5 +50,14 @@ poland_business_flow = FlowConfig(
             ],
             required_integrations=[IntegrationName.BUSINESS_CREDIT, IntegrationName.BANK_ACCOUNT],
         ),
+        FlowStep(
+            step_id="review_consent",
+            title="Review and Confirm",
+            description="Review your application and confirm your consent before we make a decision.",
+            fields=[
+                FormFieldConfig(FieldId.CONSENT, requires_true=True),
+            ],
+            required_integrations=[],
+        ),
     ],
 )

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="bg-white shadow rounded-lg p-8 max-w-xl mx-auto mt-6">
+    <div class="mb-6 border-b border-gray-100 pb-4">
+        <span class="text-xs font-bold text-blue-600 tracking-widest uppercase">{{ country }}, {{ type }}</span>
+        <h2 class="text-2xl font-bold text-gray-800 mt-1">{{ step.title }}</h2>
+        <p class="text-gray-600 text-sm mt-1">{{ step.description }}</p>
+        <div class="mt-4">
+            <div class="flex justify-between text-xs text-gray-500 mb-1">
+                <span>Step {{ current_step_number }} of {{ total_steps }}</span>
+                <span>{{ progress_percent }}%</span>
+            </div>
+            <div class="h-2 bg-gray-100 rounded overflow-hidden">
+                <div class="h-full bg-blue-600" style="width: {{ progress_percent }}%"></div>
+            </div>
+        </div>
+    </div>
+
+    {% if error_message %}
+    <div class="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded text-sm text-red-700">
+        <strong>Error:</strong> {{ error_message }}
+    </div>
+    {% endif %}
+
+    {% for section in summary %}
+    <div class="mb-6">
+        <h3 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">{{ section.title }}</h3>
+        <dl class="divide-y divide-gray-100 border border-gray-100 rounded">
+            {% for row in section.rows %}
+            <div class="flex px-4 py-2 text-sm">
+                <dt class="w-1/2 text-gray-500">{{ row.label }}</dt>
+                <dd class="w-1/2 text-gray-800 font-medium">{{ row.value }}</dd>
+            </div>
+            {% endfor %}
+        </dl>
+    </div>
+    {% endfor %}
+
+    <form action="/application/{{ application_id }}/step/{{ step.step_id }}" method="POST" class="space-y-6">
+        <input type="hidden" name="country" value="{{ country }}">
+        <input type="hidden" name="type" value="{{ type }}">
+        <input type="hidden" name="version" value="{{ version }}">
+
+        {% for field in step.fields %}
+        <div class="border-t border-gray-100 pt-4">
+            <div class="flex items-start space-x-3">
+                <input type="checkbox" name="{{ field.field_name }}" value="true"
+                    class="mt-1 h-4 w-4 border-gray-300 rounded text-blue-600 focus:ring-blue-500"
+                    {% if field.requires_true %}required{% endif %}>
+                <label class="text-sm text-gray-700">
+                    {{ field.display_label }}
+                    {% if field.requires_true %}<span class="text-red-500">*</span>{% endif %}
+                </label>
+            </div>
+        </div>
+        {% endfor %}
+
+        <div class="pt-4 flex justify-end">
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded shadow transition-colors">
+                Submit application
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}

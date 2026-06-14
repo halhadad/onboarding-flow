@@ -178,7 +178,37 @@ async def render_step_view(
 
     db_version = int(app_context["version"])
     _assert_step_can_be_rendered(flow, repository, application_id, step_id)
-        
+
+    if step_id == "review_consent":
+        summary = []
+        for prior_step in flow.steps:
+            if prior_step.step_id == "review_consent":
+                break
+            response = repository.get_step_response(application_id, prior_step.step_id)
+            if response:
+                form_data = response["form_data"]
+                rows = [
+                    {"label": field.display_label, "value": form_data.get(field.field_name)}
+                    for field in prior_step.fields
+                    if form_data.get(field.field_name) not in (None, "", False)
+                ]
+                if rows:
+                    summary.append({"title": prior_step.title, "rows": rows})
+
+        return templates.TemplateResponse(
+            request,
+            "review.html",
+            {
+                "application_id": application_id,
+                "step": step_config,
+                "country": stored_country,
+                "type": stored_account_type,
+                "version": db_version,
+                "summary": summary,
+                **_progress_context(flow, step_id),
+            }
+        )
+
     return templates.TemplateResponse(
         request,
         "step.html",

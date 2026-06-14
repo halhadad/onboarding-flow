@@ -36,6 +36,7 @@ class FieldId(str, Enum):
     EXPECTED_MONTHLY_VOLUME = "expected_monthly_volume"
     UBO_COUNT = "ubo_count"
     LARGEST_OWNERSHIP_PERCENT = "largest_ownership_percent"
+    CONSENT = "consent"
 
 
 # Legal forms vary by market; the option sets stay in the domain layer.
@@ -99,6 +100,7 @@ FIELD_CATALOG: Dict[FieldId, FieldSpec] = {
         _spec(FieldId.EXPECTED_MONTHLY_VOLUME, FieldType.NUMBER, "Expected monthly volume"),
         _spec(FieldId.UBO_COUNT, FieldType.NUMBER, "Number of beneficial owners", sensitive=False),
         _spec(FieldId.LARGEST_OWNERSHIP_PERCENT, FieldType.NUMBER, "Largest ownership (%)", sensitive=False),
+        _spec(FieldId.CONSENT, FieldType.BOOLEAN, "I confirm the information provided is accurate and I consent to the processing of my data for the purposes of this application.", sensitive=False),
     )
 }
 
@@ -110,3 +112,5 @@ def field_spec(key: FieldId) -> FieldSpec:
 def sensitive_field_keys() -> frozenset:
     """Wire keys whose values must be masked in audit logs, from catalog clearance."""
     return frozenset(spec.key.value for spec in FIELD_CATALOG.values() if spec.sensitive)
+
+

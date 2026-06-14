@@ -101,7 +101,7 @@ class IntegrationRunner:
 
     @staticmethod
     def _to_number(value: Any) -> float:
-        """Coerce already-validated input to a float; never raises."""
+        """Force already-validated input to a float; never raises."""
         if isinstance(value, (int, float)):
             return float(value)
         text = str(value or "").strip()
@@ -174,7 +174,6 @@ class IntegrationRunner:
 
     # Provider authority checks: the external system's own verdict.
 
-    _ADDRESS_CONFIDENCE = 0.95
 
     async def _run_identity_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         pin = form_data.get("personal_identity_number") or form_data.get("representative_id", "")
@@ -185,6 +184,10 @@ class IntegrationRunner:
 
     async def _run_bank_account_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         return await self.bank_account_service.validate_iban(str(form_data.get("iban", "")))
+
+    # Low risk checks, engine may not need to check it (Demo)
+
+    _ADDRESS_CONFIDENCE = 0.95
 
     async def _run_address_lookup(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         return IntegrationResult(
