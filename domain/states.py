@@ -34,5 +34,4 @@ CUSTOMER_SUBMITTABLE_STATUSES = frozenset(
 
 
 def is_customer_submittable(status: ApplicationStatus) -> bool:
-    """Whether the applicant may submit or resume a step."""
     return status in CUSTOMER_SUBMITTABLE_STATUSES

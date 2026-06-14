@@ -7,7 +7,6 @@ _DEFAULT_SANCTIONED_RESIDENCIES = frozenset({"IR", "KP", "SY"})
 
 
 class MockSanctionsCheckService(SanctionsCheckService):
-    """Deterministic sanctions screening mock; reports signals, does not decide."""
 
     def __init__(self, sanctioned_residencies: FrozenSet[str] = _DEFAULT_SANCTIONED_RESIDENCIES):
         self.sanctioned_residencies = sanctioned_residencies

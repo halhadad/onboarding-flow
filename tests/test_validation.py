@@ -12,7 +12,6 @@ def test_sweden_identity_rejects_keyboard_smash():
 
 
 def test_non_numeric_number_field_is_rejected_at_validation():
-    # Bad numeric input is a 400 at the boundary, never reaches the runner as a 503.
     step = flow_registry.get_flow("SWEDEN", "private").get_step_by_id("financial_profile")
 
     with pytest.raises(FormValidationError, match="must be a valid number"):

@@ -44,7 +44,7 @@ def _assert_step_can_be_rendered(flow, repository: SQLAlchemyApplicationReposito
             break
 
     if requested_index > first_incomplete_index:
-        raise HTTPException(status_code=403, detail="Complete the previous onboarding steps before opening this step.")
+        raise HTTPException(status_code=403, detail="Please complete the previous steps first.")
 
 
 def _load_routable_application_context(
@@ -61,18 +61,18 @@ def _load_routable_application_context(
     stored_country = str(app_context["country"]).upper()
     stored_account_type = str(app_context["account_type"]).lower()
     if stored_country != country.upper() or stored_account_type != account_type.lower():
-        raise HTTPException(status_code=403, detail="Application route does not match the stored onboarding journey.")
+        raise HTTPException(status_code=403, detail="Wrong country or account type for this application.")
 
     # Same gate as the service layer; MANUAL_REVIEW is parked with a reviewer.
     if not is_customer_submittable(ApplicationStatus(str(app_context["status"]))):
-        raise HTTPException(status_code=409, detail="This application is no longer open for customer input.")
+        raise HTTPException(status_code=409, detail="This application is no longer accepting submissions.")
 
     if not resume_token:
-        raise HTTPException(status_code=403, detail="This application session is not available on this device.")
+        raise HTTPException(status_code=403, detail="No active session found on this device.")
 
     token_context = repository.get_application_context_by_resume_token(resume_token)
     if not token_context or str(token_context["id"]) != application_id or token_context.get("resume_token_expired"):
-        raise HTTPException(status_code=403, detail="This application session is not available on this device.")
+        raise HTTPException(status_code=403, detail="Session expired or not found. Please resume from your original device.")
 
     return app_context
 
@@ -81,7 +81,6 @@ async def index_view(request: Request):
     return templates.TemplateResponse(request, "start.html")
 
 def _handle_resume(request: Request, repository: SQLAlchemyApplicationRepository):
-    """Shared resume logic for both the GET and POST resume endpoints."""
     error_message = "No resumable application was found on this device."
     resume_token = request.cookies.get(RESUME_COOKIE_NAME)
     if not resume_token:
@@ -121,7 +120,7 @@ async def start_application_view(
         return templates.TemplateResponse(
             request,
             "start.html",
-            {"error_message": "Unsupported onboarding flow. Choose one of the listed country and account type combinations."},
+            {"error_message": "That combination of country and account type is not supported. Please select from the options below."},
             status_code=400,
         )
 
@@ -157,7 +156,6 @@ async def render_step_view(
     account_type: str = Query(alias="type"),
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
-    """Render a step's form."""
     app_context = _load_routable_application_context(
         repository,
         application_id,
@@ -174,7 +172,7 @@ async def render_step_view(
         raise HTTPException(status_code=400, detail="Unsupported onboarding flow.") from err
     step_config = flow.get_step_by_id(step_id)
     if not step_config:
-        raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
+        raise HTTPException(status_code=404, detail="Step not found.")
 
     db_version = int(app_context["version"])
     _assert_step_can_be_rendered(flow, repository, application_id, step_id)
@@ -253,10 +251,9 @@ async def submit_step_view(
 
     step_config = flow.get_step_by_id(step_id)
     if not step_config:
-        raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
+        raise HTTPException(status_code=404, detail="Step not found.")
 
-    # The DB version is used to re-render forms; the posted version (validated
-    # atomically by the repo's WHERE version=? guard) drives the concurrency check.
+    # The DB version check
     db_version = int(app_context["version"])
 
     try:
@@ -317,7 +314,7 @@ async def submit_step_view(
             status_code=409,
         )
     except IntegrationUnavailableError:
-        # Transient outage; step not saved, the customer can resubmit.
+        
         return templates.TemplateResponse(
             request,
             "step.html",
@@ -336,8 +333,6 @@ async def submit_step_view(
     status_outcome = result["status"]
     next_step_id = result["next_step_id"]
 
-    # No next step means the flow ended; show the decision page. Internal reasons
-    # stay in the decisions table for back office; the customer sees a reference only.
     if not next_step_id:
         response = templates.TemplateResponse(
             request,

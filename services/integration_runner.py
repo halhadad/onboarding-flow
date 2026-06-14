@@ -25,15 +25,12 @@ IntegrationHandler = Callable[[str, Dict[str, Any], str], Awaitable[IntegrationR
 
 
 class IntegrationUnavailableError(Exception):
-    """Transient provider failure; not a manual_review signal."""
-
     def __init__(self, integration_name: str):
         super().__init__(f"Integration '{integration_name}' is temporarily unavailable.")
         self.integration_name = integration_name
 
 
 class IntegrationRunner:
-    """Runs a step's checks with per attempt timeout and retry."""
 
     def __init__(
         self,
@@ -101,7 +98,6 @@ class IntegrationRunner:
 
     @staticmethod
     def _to_number(value: Any) -> float:
-        """Force already-validated input to a float; never raises."""
         if isinstance(value, (int, float)):
             return float(value)
         text = str(value or "").strip()

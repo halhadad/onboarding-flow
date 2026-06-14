@@ -3,7 +3,7 @@ from domain.ports import IntegrationResult, RegistryLookupService
 from domain.enums import RegistryStatus
 from domain.states import CheckOutcome
 
-# Provider authority check: the registry's status IS the verdict.
+
 _OUTCOME = {
     RegistryStatus.ACTIVE: CheckOutcome.APPROVED,
     RegistryStatus.NOT_FOUND: CheckOutcome.REJECTED,
@@ -12,7 +12,6 @@ _OUTCOME = {
 
 
 class MockRegistryService(RegistryLookupService):
-    """Deterministic company registry mock."""
 
     async def lookup_entity(self, tax_id: str) -> IntegrationResult:
         if tax_id.startswith("00"):

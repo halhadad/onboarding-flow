@@ -4,7 +4,6 @@ from domain.enums import DebtFlag
 
 
 class MockCreditBureauService(CreditBureauService):
-    """Deterministic credit bureau mock; reports signals, does not decide."""
 
     async def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> CreditAssessment:
         disposable_income = monthly_income - monthly_expenses

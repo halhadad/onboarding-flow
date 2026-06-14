@@ -10,7 +10,6 @@ class ApplicationEntity:
     version: int
 
     def can_transition_to(self, new_status: ApplicationStatus) -> bool:
-        """False once the status is terminal; MANUAL_REVIEW is not terminal."""
         if self.status in TERMINAL_APPLICATION_STATUSES:
             return False
         return True

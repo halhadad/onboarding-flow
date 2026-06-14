@@ -7,8 +7,6 @@ from domain.states import CheckOutcome
 
 @dataclass(frozen=True)
 class CreditAssessment:
-    """Raw affordability signals from the credit bureau."""
-
     score: int
     disposable_income: float
     debt_to_income_ratio: float
@@ -17,8 +15,6 @@ class CreditAssessment:
 
 @dataclass(frozen=True)
 class SanctionsScreening:
-    """Raw signals from the sanctions screening provider."""
-
     sanctions_hit: bool
     pep_hit: bool
     matched_country: Optional[str] = None
@@ -26,23 +22,18 @@ class SanctionsScreening:
 
 @dataclass(frozen=True)
 class OwnershipProfile:
-    """Beneficial ownership facts for a business."""
-
     ubo_count: int
     largest_ownership_percent: float
 
 
 @dataclass(frozen=True)
 class BusinessProfile:
-    """Business activity facts for KYB."""
-
     annual_turnover: float
     expected_monthly_volume: float
     sector: str
 
 
 class AutomatedDecisionEngine:
-    """Single owner of risk policy; maps facts to a decision."""
 
     def __init__(
         self,

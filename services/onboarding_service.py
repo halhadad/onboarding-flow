@@ -25,7 +25,6 @@ logger = logging.getLogger("onboarding.service")
 
 
 class OnboardingService:
-    """Orchestrates one step submission: guard state, run checks, advance."""
 
     def __init__(
         self,
@@ -57,14 +56,12 @@ class OnboardingService:
         )
 
     def start_application(self, country: str, account_type: str, request_id: str) -> tuple[str, str]:
-        """Create an application in one transaction; return (id, resume token)."""
         application_id = new_uuid()
         with self.repository.atomic():
             token = self.repository.create_application(application_id, country, account_type, request_id)
         return application_id, token
 
     def _payload_fingerprint(self, form_data: Dict[str, Any]) -> str:
-        """Content fingerprint to detect an unchanged resubmission."""
         normalised = json.dumps(form_data, sort_keys=True)
         return hashlib.sha256(normalised.encode()).hexdigest()
 
@@ -74,12 +71,12 @@ class OnboardingService:
             None,
         )
         if requested_index is None:
-            raise StateTransitionError("Requested step is not part of this onboarding flow.")
+            raise StateTransitionError("This step is not part of the current flow.")
 
         for previous_step in flow.steps[:requested_index]:
             if not self.repository.get_step_response(application_id, previous_step.step_id):
                 raise StateTransitionError(
-                    f"Step '{step_id}' cannot be submitted before completing '{previous_step.step_id}'."
+                    f"Complete '{previous_step.step_id}' before submitting '{step_id}'."
                 )
 
     async def process_step_submission(
@@ -92,11 +89,10 @@ class OnboardingService:
         current_version: int,
         request_id: str
     ) -> Dict[str, Any]:
-        """Validate, run the step's checks, and advance the application."""
         flow = self.flow_registry.get_flow(country, account_type)
         step_config = flow.get_step_by_id(step_id)
         if not step_config:
-            raise ValueError(f"Step {step_id} does not map to this specific application configuration workflow.")
+            raise ValueError(f"Step '{step_id}' not found in this flow.")
 
         logger.info(
             "step_submission_started",
@@ -112,7 +108,7 @@ class OnboardingService:
         # Reconstruct the application model state cleanly from historical records
         current_status_str = self.repository.get_application_status(application_id)
         if current_status_str is None:
-            raise ValueError(f"Application {application_id} does not exist.")
+            raise ValueError(f"Application {application_id} not found.")
         application = ApplicationEntity(
             id=application_id,
             country=country,
@@ -124,7 +120,7 @@ class OnboardingService:
         # Gate shared with the web layer; covers terminal and MANUAL_REVIEW states.
         if not is_customer_submittable(application.status):
             raise StateTransitionError(
-                f"This application can no longer be modified by the applicant (status: {application.status.value})."
+                f"This application can no longer be modified (status: {application.status.value})."
             )
 
         self._assert_step_is_reachable(application_id, flow, step_id)
@@ -136,15 +132,13 @@ class OnboardingService:
             next_step_id = flow.get_next_step_id(step_id)
             return {"status": application.status.value, "next_step_id": next_step_id, "reasons": []}
 
-        # Run all checks (async, with timeout/retry) before persisting; a reviewer
-        # needs every reason. A transient failure raises here, before any write,
-        # so the step is not finalised and a retry runs it again.
+        # Run all checks required
         results = []
         for integration in step_config.required_integrations:
             result = await self.integration_runner.run(integration, application_id, form_data, request_id)
             results.append((integration, result))
 
-        # Collect every adverse reason and decide the resulting status.
+        # Collect reasons and decide the resulting status.
         reasons = [
             f"{getattr(integration, 'value', integration)}:{result.status_outcome.value}"
             for integration, result in results
@@ -167,8 +161,7 @@ class OnboardingService:
         decision_reasons = reasons if (rejected or needs_review) else []
         application.transition_status(final_status)
 
-        # One transaction for every write: a concurrency conflict or duplicate step
-        # rolls back the whole submission, so the database never holds partial state.
+        # DB
         with self.repository.atomic():
             self.repository.save_step_response(application_id, step_id, form_data, current_hash)
             for integration, result in results:

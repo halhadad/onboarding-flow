@@ -9,7 +9,6 @@ from domain.enums import AuditField
 logger = logging.getLogger("onboarding.request")
 
 class BankingSecurityAuditMiddleware(BaseHTTPMiddleware):
-    """Attach a request ID and log each request."""
 
     async def dispatch(self, request: Request, call_next):
         # Give every request a unique audit ID.

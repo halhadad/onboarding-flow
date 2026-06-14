@@ -10,14 +10,12 @@ _OUTCOME = {
     BankAccountStatus.NAME_MISMATCH: CheckOutcome.MANUAL_REVIEW,
 }
 
-# An IBAN ending in this sentinel simulates an unreachable provider: the call
-# hangs so the runner's timeout (and retries) are exercised.
+# An IBAN ending in this value hangs so the runner timeout
 _UNREACHABLE_SENTINEL = "0000"
 _HANG_SECONDS = 30.0
 
 
 class MockBankAccountService(BankAccountValidationService):
-    """Deterministic bank account check mock."""
 
     async def validate_iban(self, iban: str) -> IntegrationResult:
         clean_iban = iban.replace(" ", "").upper()

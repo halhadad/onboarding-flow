@@ -4,7 +4,6 @@ from services.redaction import redact_integration_payload
 
 
 def test_integration_payload_redacts_emitted_sensitive_keys():
-    # Only keys our providers actually emit are redacted; innocent keys are kept.
     payload = redact_integration_payload(
         json.dumps(
             {
@@ -24,8 +23,6 @@ def test_integration_payload_redacts_emitted_sensitive_keys():
 
 
 def test_integration_payload_redacts_nested_and_listed_sensitive_fields():
-    # A provider can bury sensitive values in nested objects/lists; redaction
-    # walks the whole structure, and masks by key regardless of value type.
     payload = redact_integration_payload(
         json.dumps(
             {

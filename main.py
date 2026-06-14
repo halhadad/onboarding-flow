@@ -16,7 +16,6 @@ logger = logging.getLogger("onboarding.app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create tables and enable WAL on startup."""
     db.models.Base.metadata.create_all(bind=engine)
     with engine.connect() as connection:
         connection.exec_driver_sql("PRAGMA journal_mode=WAL;")
@@ -35,7 +34,6 @@ app.add_middleware(BankingSecurityAuditMiddleware)
 
 @app.exception_handler(ConcurrentModificationError)
 async def concurrent_modification_exception_handler(request: Request, exc: ConcurrentModificationError):
-    """Fallback conflict page for double submissions."""
     return templates.TemplateResponse(request, "conflict.html", {}, status_code=409)
 
 app.include_router(web_router)

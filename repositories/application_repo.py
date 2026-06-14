@@ -26,7 +26,6 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
-        """Unit of work: commit on success, roll back on any error."""
         try:
             yield
             self.session.commit()
@@ -104,7 +103,7 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
         )
         if result.rowcount == 0:
             raise ConcurrentModificationError(
-                f"Conflict detected. Application {application_id} was modified by another parallel transaction process."
+                f"Application {application_id} was modified by another request."
             )
 
     def save_step_response(self, application_id: str, step_id: str, form_data: Dict[str, Any], payload_hash: str) -> None:
@@ -132,7 +131,7 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             self.session.flush()
         except IntegrityError as err:
             raise ConcurrentModificationError(
-                f"Idempotency lock triggered. Step {step_id} response is currently processing under an alternative thread environment."
+                f"Step '{step_id}' is already being saved by another request."
             ) from err
 
     def get_step_response(self, application_id: str, step_id: str) -> Optional[Dict[str, Any]]:

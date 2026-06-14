@@ -2,7 +2,6 @@ from enum import Enum
 
 
 class Country(str, Enum):
-    """Markets the bank onboards in."""
     SWEDEN = "SWEDEN"
     SPAIN = "SPAIN"
     POLAND = "POLAND"
@@ -14,7 +13,6 @@ class AccountType(str, Enum):
 
 
 class IntegrationName(str, Enum):
-    """External checks a step can require."""
     IDENTITY = "identity"
     ADDRESS_LOOKUP = "address_lookup"
     SANCTIONS = "sanctions"
@@ -34,33 +32,28 @@ class Sector(str, Enum):
 
 
 class IdentityStatus(str, Enum):
-    """Verdict reported by the identity provider."""
     VERIFIED = "verified"
     EXPIRED_ID = "expired_id"
     AMBIGUOUS = "ambiguous_match"
 
 
 class RegistryStatus(str, Enum):
-    """Verdict reported by the company registry."""
     ACTIVE = "active_company"
     NOT_FOUND = "not_found"
     AMBIGUOUS = "ambiguous_company_match"
 
 
 class BankAccountStatus(str, Enum):
-    """Verdict reported by the bank account check."""
     VERIFIED = "iban_verified"
     NAME_MISMATCH = "name_mismatch"
 
 
 class DebtFlag(str, Enum):
-    """Affordability flags raised by the credit bureau."""
     NEGATIVE_SURPLUS = "NEGATIVE_SURPLUS"
     HIGH_LEVERAGE_RISK = "HIGH_LEVERAGE_RISK"
 
 
 class AuditField(str, Enum):
-    """Structured log keys; single source for producers and the JSON line."""
     REQUEST_ID = "request_id"
     APPLICATION_ID = "application_id"
     COMPONENT = "component"

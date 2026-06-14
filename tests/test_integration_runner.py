@@ -23,8 +23,6 @@ def _runner(**kwargs) -> IntegrationRunner:
 
 
 async def test_unreachable_provider_times_out_and_is_reported_unavailable():
-    # IBAN ending in 0000 makes the mock hang; the short timeout and retries
-    # are exhausted, surfacing a transient failure rather than hanging.
     runner = _runner(timeout_seconds=0.01, max_attempts=2)
 
     with pytest.raises(IntegrationUnavailableError):

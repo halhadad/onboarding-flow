@@ -99,8 +99,6 @@ async def test_business_profile_runs_bank_account_after_approved_business_credit
 
 
 async def test_step_collects_all_reasons_and_takes_the_worst_outcome():
-    # business_profile runs business_credit (reject) AND bank_account (review).
-    # Both run; all reasons are recorded; the worst outcome (REJECTED) wins.
     repository = InMemoryRepository()
     for step_id in ("business_identity", "representative", "beneficial_owners"):
         repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
@@ -128,8 +126,6 @@ async def test_step_collects_all_reasons_and_takes_the_worst_outcome():
 
 
 async def test_affordability_decision_flows_through_the_engine():
-    # Negative disposable income must drive a REJECTED outcome decided by the
-    # AutomatedDecisionEngine (the credit mock only reports raw signals).
     repository = InMemoryRepository()
     for step_id in ("collect_identity", "confirm_contact", "regulatory_declarations"):
         repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
@@ -151,8 +147,6 @@ async def test_affordability_decision_flows_through_the_engine():
 
 
 async def test_transient_provider_failure_does_not_persist_or_manual_review():
-    # A provider outage must surface as a transient error, leave the step
-    # un-saved (so a retry re-runs it), and never park the application.
     repository = InMemoryRepository()
     for step_id in ("collect_identity", "confirm_contact", "regulatory_declarations"):
         repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
@@ -183,7 +177,7 @@ async def test_service_rejects_step_skipping():
     repository = InMemoryRepository()
     service = _service(repository)
 
-    with pytest.raises(StateTransitionError, match="cannot be submitted"):
+    with pytest.raises(StateTransitionError, match="Complete"):
         await service.process_step_submission(
             application_id="app-1",
             country="SWEDEN",

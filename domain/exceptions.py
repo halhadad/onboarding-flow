@@ -1,10 +1,10 @@
 class StateTransitionError(Exception):
-    """An application was asked to make an illegal state change."""
+    pass
 
 
 class FlowRegistryError(Exception):
-    """No flow is configured for a country and account type."""
+    pass
 
 
 class ResumeApplicationError(Exception):
-    """An application cannot be resumed."""
+    pass

@@ -15,7 +15,6 @@ from config import settings
 
 
 def get_db_session() -> Generator[Session, None, None]:
-    """Yield a DB session and close it after."""
     session = SessionLocal()
     try:
         yield session

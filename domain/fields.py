@@ -6,7 +6,6 @@ from domain.enums import Sector
 
 
 class FieldType(str, Enum):
-    """Input shape a field renders and validates as."""
     TEXT = "text"
     NUMBER = "number"
     SELECT = "select"
@@ -14,7 +13,6 @@ class FieldType(str, Enum):
 
 
 class FieldId(str, Enum):
-    """Every field a flow can ask for, named once."""
     PERSONAL_IDENTITY_NUMBER = "personal_identity_number"
     REPRESENTATIVE_ID = "representative_id"
     COMPANY_IDENTIFIER = "company_identifier"
@@ -60,7 +58,6 @@ TAX_RESIDENCY_OPTIONS = (
 
 @dataclass(frozen=True)
 class FieldSpec:
-    """Single source of truth for a field: shape, label, options, redaction clearance."""
     key: FieldId
     field_type: FieldType
     label: str
@@ -110,7 +107,6 @@ def field_spec(key: FieldId) -> FieldSpec:
 
 
 def sensitive_field_keys() -> frozenset:
-    """Wire keys whose values must be masked in audit logs, from catalog clearance."""
     return frozenset(spec.key.value for spec in FIELD_CATALOG.values() if spec.sensitive)
 
 

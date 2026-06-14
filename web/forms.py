@@ -6,9 +6,6 @@ from domain.enums import Country
 from domain.fields import FieldId
 from web.exceptions import FormValidationError
 
-# Validation is driven by the flow's declared fields via validate_step_payload.
-# Text fields dispatch to a validator registry (no large field_name elif chain).
-
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
@@ -94,7 +91,6 @@ def _validate_number(field: FormFieldConfig, value: Any) -> float:
     return number
 
 
-# Text field validators, keyed by field id. Signature: (field, country, value).
 _TEXT_VALIDATORS: Dict[FieldId, Callable[[FormFieldConfig, str, str], str]] = {
     FieldId.PERSONAL_IDENTITY_NUMBER: lambda field, country, value: _validate_identity(country, value),
     FieldId.REPRESENTATIVE_ID: lambda field, country, value: _validate_identity(country, value),

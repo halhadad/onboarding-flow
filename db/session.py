@@ -13,7 +13,6 @@ engine = create_engine(
 
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
-    """Enable foreign keys and IMMEDIATE isolation per connection."""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON;")
     dbapi_connection.isolation_level = "IMMEDIATE"

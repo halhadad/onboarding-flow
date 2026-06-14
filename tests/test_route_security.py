@@ -1,8 +1,3 @@
-"""
-Route security tests at two levels:
-- Unit: call the guard functions directly with a stub repository
-- HTTP: hit the full stack via TestClient to prove the guards wire up end-to-end
-"""
 from typing import Any, Dict, Optional
 
 import pytest
@@ -15,9 +10,7 @@ from web.dependencies import get_application_repository
 from web.views import _assert_step_can_be_rendered, _load_routable_application_context
 
 
-# ---------------------------------------------------------------------------
-# Shared stub repository
-# ---------------------------------------------------------------------------
+
 
 class StubRepository:
     _SENTINEL = object()
@@ -58,9 +51,7 @@ def _http_client(repository: StubRepository) -> TestClient:
     return TestClient(app)
 
 
-# ---------------------------------------------------------------------------
-# Unit-level guard tests (_load_routable_application_context)
-# ---------------------------------------------------------------------------
+
 
 def test_guard_rejects_missing_application():
     repo = StubRepository(context=None)
@@ -101,9 +92,7 @@ def test_guard_rejects_missing_expired_and_wrong_resume_cookie():
         assert exc.value.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# Unit-level render guard tests (_assert_step_can_be_rendered)
-# ---------------------------------------------------------------------------
+
 
 def test_render_guard_rejects_later_step_without_prior_responses():
     repo = StubRepository()
@@ -120,9 +109,7 @@ def test_render_guard_allows_next_incomplete_step():
     _assert_step_can_be_rendered(flow, repo, "app-1", "confirm_contact")
 
 
-# ---------------------------------------------------------------------------
-# HTTP-level tests (full stack via TestClient)
-# ---------------------------------------------------------------------------
+
 
 def test_http_rejects_terminal_application_direct_url():
     client = _http_client(StubRepository(status="APPROVED"))
