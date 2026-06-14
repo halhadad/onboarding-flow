@@ -36,9 +36,6 @@ class ResumeRepository:
     def get_application_status(self, application_id: str) -> Optional[str]:
         return self.status.get(application_id)
 
-    def get_application_version(self, application_id: str) -> Optional[int]:
-        return 1
-
     def get_application_context(self, application_id: str) -> Optional[Dict[str, Any]]:
         return None
 

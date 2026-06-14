@@ -1,6 +1,6 @@
 from domain.flow import FlowConfig, FlowStep, FormFieldConfig
-from domain.enums import AccountType, Country, IntegrationName, PiiCategory
-from domain.countries import TAX_RESIDENCY_OPTIONS
+from domain.enums import AccountType, Country, IntegrationName
+from domain.fields import FieldId
 
 sweden_individual_flow = FlowConfig(
     country=Country.SWEDEN,
@@ -11,7 +11,7 @@ sweden_individual_flow = FlowConfig(
             title="Identity Verification",
             description="Please enter your Swedish personal identity number to initiate verification via BankID.",
             fields=[
-                FormFieldConfig("personal_identity_number", "text", True, pii_category=PiiCategory.NATIONAL_ID),
+                FormFieldConfig(FieldId.PERSONAL_IDENTITY_NUMBER),
             ],
             required_integrations=[IntegrationName.IDENTITY],
         ),
@@ -20,8 +20,8 @@ sweden_individual_flow = FlowConfig(
             title="Contact Details",
             description="Verify your current residential address and telephone information.",
             fields=[
-                FormFieldConfig("address", "text", True, pii_category=PiiCategory.ADDRESS),
-                FormFieldConfig("phone_number", "text", True, pii_category=PiiCategory.PHONE),
+                FormFieldConfig(FieldId.ADDRESS),
+                FormFieldConfig(FieldId.PHONE_NUMBER),
             ],
             required_integrations=[IntegrationName.ADDRESS_LOOKUP],
         ),
@@ -30,8 +30,8 @@ sweden_individual_flow = FlowConfig(
             title="Regulatory Declarations",
             description="Provide necessary compliance, tax residency, and Politically Exposed Person status declarations.",
             fields=[
-                FormFieldConfig("is_pep", "boolean", True),
-                FormFieldConfig("tax_residency", "select", True, TAX_RESIDENCY_OPTIONS),
+                FormFieldConfig(FieldId.IS_PEP),
+                FormFieldConfig(FieldId.TAX_RESIDENCY),
             ],
             required_integrations=[IntegrationName.SANCTIONS],
         ),
@@ -40,9 +40,9 @@ sweden_individual_flow = FlowConfig(
             title="Financial Profile",
             description="Please provide details regarding your monthly employment income, expenses, and outstanding liabilities.",
             fields=[
-                FormFieldConfig("monthly_income", "number", True),
-                FormFieldConfig("monthly_expenses", "number", True),
-                FormFieldConfig("outstanding_debts", "number", True),
+                FormFieldConfig(FieldId.MONTHLY_INCOME),
+                FormFieldConfig(FieldId.MONTHLY_EXPENSES),
+                FormFieldConfig(FieldId.OUTSTANDING_DEBTS),
             ],
             required_integrations=[IntegrationName.CREDIT_BUREAU],
         ),

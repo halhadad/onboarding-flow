@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
-
+from config import settings
 from domain.enums import Sector
 from domain.states import CheckOutcome
 
@@ -46,8 +46,8 @@ class AutomatedDecisionEngine:
 
     def __init__(
         self,
-        high_dti_threshold: float = 0.60,
-        concentrated_ownership_threshold: float = 75.0,
+        high_dti_threshold: float = settings.DTI_THRESHOLD,
+        concentrated_ownership_threshold: float = settings.OWNERSHIP_CONCENTRATION_THRESHOLD,
         high_risk_sectors: frozenset[str] = frozenset({Sector.FINANCIAL_SERVICES.value}),
     ) -> None:
         self.high_dti_threshold = high_dti_threshold

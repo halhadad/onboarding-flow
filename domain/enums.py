@@ -26,18 +26,46 @@ class IntegrationName(str, Enum):
     BANK_ACCOUNT = "bank_account"
 
 
-class PiiCategory(str, Enum):
-    """Redaction category for a sensitive field."""
-    NATIONAL_ID = "NATIONAL_ID"
-    COMPANY_ID = "COMPANY_ID"
-    IBAN = "IBAN"
-    ADDRESS = "ADDRESS"
-    PHONE = "PHONE"
-    TAX_RESIDENCY = "TAX_RESIDENCY"
-
-
 class Sector(str, Enum):
     RETAIL = "retail"
     SERVICES = "services"
     MANUFACTURING = "manufacturing"
     FINANCIAL_SERVICES = "financial_services"
+
+
+class IdentityStatus(str, Enum):
+    """Verdict reported by the identity provider."""
+    VERIFIED = "verified"
+    EXPIRED_ID = "expired_id"
+    AMBIGUOUS = "ambiguous_match"
+
+
+class RegistryStatus(str, Enum):
+    """Verdict reported by the company registry."""
+    ACTIVE = "active_company"
+    NOT_FOUND = "not_found"
+    AMBIGUOUS = "ambiguous_company_match"
+
+
+class BankAccountStatus(str, Enum):
+    """Verdict reported by the bank account check."""
+    VERIFIED = "iban_verified"
+    NAME_MISMATCH = "name_mismatch"
+
+
+class DebtFlag(str, Enum):
+    """Affordability flags raised by the credit bureau."""
+    NEGATIVE_SURPLUS = "NEGATIVE_SURPLUS"
+    HIGH_LEVERAGE_RISK = "HIGH_LEVERAGE_RISK"
+
+
+class AuditField(str, Enum):
+    """Structured log keys; single source for producers and the JSON line."""
+    REQUEST_ID = "request_id"
+    APPLICATION_ID = "application_id"
+    COMPONENT = "component"
+    OUTCOME = "outcome"
+    METHOD = "method"
+    PATH = "path"
+    STATUS_CODE = "status_code"
+    DURATION_MS = "duration_ms"

@@ -1,10 +1,8 @@
 from typing import Dict, Any, Optional
 from domain.ports import ApplicationRepository
+from domain.exceptions import ResumeApplicationError
 from domain.flow_registry import FlowRegistry, flow_registry as default_flow_registry
 from domain.states import ApplicationStatus, is_customer_submittable
-
-class ResumeApplicationError(Exception):
-    pass
 
 class ResumeService:
     def __init__(self, repository: ApplicationRepository, registry: Optional[FlowRegistry] = None):
@@ -38,17 +36,13 @@ class ResumeService:
             )
 
         flow = self.flow_registry.get_flow(country, account_type)
-        
-        resume_step_id = flow.steps[0].step_id
-        for step in flow.steps:
-            existing_response = self.repository.get_step_response(application_id, step.step_id)
-            if existing_response:
-                next_step_id = flow.get_next_step_id(step.step_id)
-                if next_step_id:
-                    resume_step_id = next_step_id
-            else:
-                resume_step_id = step.step_id
-                break
+
+        # First step with no saved response; if all are present the flow is complete.
+        resume_step_id = next(
+            (step.step_id for step in flow.steps
+             if not self.repository.get_step_response(application_id, step.step_id)),
+            flow.steps[-1].step_id,
+        )
 
         return {
             "application_id": application_id,

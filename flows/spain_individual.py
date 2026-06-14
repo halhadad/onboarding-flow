@@ -1,6 +1,6 @@
 from domain.flow import FlowConfig, FlowStep, FormFieldConfig
-from domain.enums import AccountType, Country, IntegrationName, PiiCategory
-from domain.countries import TAX_RESIDENCY_OPTIONS
+from domain.enums import AccountType, Country, IntegrationName
+from domain.fields import FieldId
 
 spain_individual_flow = FlowConfig(
     country=Country.SPAIN,
@@ -11,7 +11,7 @@ spain_individual_flow = FlowConfig(
             title="DNI/NIE Verification",
             description="Enter your DNI or NIE so we can run a deterministic identity check.",
             fields=[
-                FormFieldConfig("personal_identity_number", "text", True, pii_category=PiiCategory.NATIONAL_ID),
+                FormFieldConfig(FieldId.PERSONAL_IDENTITY_NUMBER),
             ],
             required_integrations=[IntegrationName.IDENTITY],
         ),
@@ -20,9 +20,9 @@ spain_individual_flow = FlowConfig(
             title="Contact and Address",
             description="Confirm contact details, province and residential address.",
             fields=[
-                FormFieldConfig("address", "text", True, pii_category=PiiCategory.ADDRESS),
-                FormFieldConfig("province", "text", True),
-                FormFieldConfig("phone_number", "text", True, pii_category=PiiCategory.PHONE),
+                FormFieldConfig(FieldId.ADDRESS),
+                FormFieldConfig(FieldId.PROVINCE),
+                FormFieldConfig(FieldId.PHONE_NUMBER),
             ],
             required_integrations=[IntegrationName.ADDRESS_LOOKUP],
         ),
@@ -31,8 +31,8 @@ spain_individual_flow = FlowConfig(
             title="Compliance Declarations",
             description="Confirm consent, PEP status, sanctions declaration and tax residency.",
             fields=[
-                FormFieldConfig("is_pep", "boolean", True),
-                FormFieldConfig("tax_residency", "select", True, TAX_RESIDENCY_OPTIONS),
+                FormFieldConfig(FieldId.IS_PEP),
+                FormFieldConfig(FieldId.TAX_RESIDENCY),
             ],
             required_integrations=[IntegrationName.SANCTIONS],
         ),
@@ -41,9 +41,9 @@ spain_individual_flow = FlowConfig(
             title="Affordability Profile",
             description="Provide income, housing costs and other debts for credit decisioning.",
             fields=[
-                FormFieldConfig("monthly_income", "number", True),
-                FormFieldConfig("monthly_expenses", "number", True),
-                FormFieldConfig("outstanding_debts", "number", True),
+                FormFieldConfig(FieldId.MONTHLY_INCOME),
+                FormFieldConfig(FieldId.MONTHLY_EXPENSES),
+                FormFieldConfig(FieldId.OUTSTANDING_DEBTS),
             ],
             required_integrations=[IntegrationName.CREDIT_BUREAU],
         ),

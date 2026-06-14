@@ -15,13 +15,10 @@ from domain.ports import (
 )
 from domain.flow_registry import FlowRegistry, flow_registry as default_flow_registry
 from domain.entities import ApplicationEntity
+from domain.exceptions import StateTransitionError
 from domain.states import ApplicationStatus, CheckOutcome, is_customer_submittable
 from services.integration_runner import IntegrationRunner
-
-
-class StateTransitionError(Exception):
-    pass
-
+from shared.util import new_uuid
 
 logger = logging.getLogger("onboarding.service")
 
@@ -39,6 +36,9 @@ class OnboardingService:
         bank_account_service: BankAccountValidationService,
         decision_engine: Optional[AutomatedDecisionEngine] = None,
         registry: Optional[FlowRegistry] = None,
+        integration_timeout_seconds: float = 2.0,
+        integration_max_attempts: int = 2,
+        integration_demo_delay_seconds: float = 0.0,
     ):
         self.repository = repository
         self.flow_registry = registry or default_flow_registry
@@ -50,9 +50,19 @@ class OnboardingService:
             registry_service=registry_service,
             bank_account_service=bank_account_service,
             decision_engine=self.decision_engine,
+            timeout_seconds=integration_timeout_seconds,
+            max_attempts=integration_max_attempts,
+            demo_delay_seconds=integration_demo_delay_seconds,
         )
 
-    def _generate_idempotency_key(self, form_data: Dict[str, Any]) -> str:
+    def start_application(self, country: str, account_type: str, request_id: str) -> tuple[str, str]:
+        """Create an application in one transaction; return (id, resume token)."""
+        application_id = new_uuid()
+        with self.repository.atomic():
+            token = self.repository.create_application(application_id, country, account_type, request_id)
+        return application_id, token
+
+    def _payload_fingerprint(self, form_data: Dict[str, Any]) -> str:
         """Content fingerprint to detect an unchanged resubmission."""
         normalised = json.dumps(form_data, sort_keys=True)
         return hashlib.sha256(normalised.encode()).hexdigest()
@@ -71,7 +81,7 @@ class OnboardingService:
                     f"Step '{step_id}' cannot be submitted before completing '{previous_step.step_id}'."
                 )
 
-    def process_step_submission(
+    async def process_step_submission(
         self,
         application_id: str,
         country: str,
@@ -119,27 +129,21 @@ class OnboardingService:
         self._assert_step_is_reachable(application_id, flow, step_id)
 
         existing_response = self.repository.get_step_response(application_id, step_id)
-        current_hash = self._generate_idempotency_key(form_data)
+        current_hash = self._payload_fingerprint(form_data)
 
         if existing_response and existing_response.get("payload_hash") == current_hash:
             next_step_id = flow.get_next_step_id(step_id)
             return {"status": application.status.value, "next_step_id": next_step_id, "reasons": []}
 
-        # Run all checks before persisting; a reviewer needs every reason.
-        # A transient failure raises before persistence, so a retry runs the step again.
+        # Run all checks (async, with timeout/retry) before persisting; a reviewer
+        # needs every reason. A transient failure raises here, before any write,
+        # so the step is not finalised and a retry runs it again.
         results = []
         for integration in step_config.required_integrations:
-            result = self.integration_runner.run(integration, application_id, form_data, request_id)
+            result = await self.integration_runner.run(integration, application_id, form_data, request_id)
             results.append((integration, result))
 
-        # Checks passed without a transient failure; persist step and audit logs.
-        self.repository.save_step_response(application_id, step_id, form_data, current_hash)
-        for integration, result in results:
-            self.repository.log_integration_check(
-                application_id, integration, result.status_outcome, result.raw_response_json, request_id
-            )
-
-        # Collect every adverse outcome and pick the most severe one.
+        # Collect every adverse reason and decide the resulting status.
         reasons = [
             f"{getattr(integration, 'value', integration)}:{result.status_outcome.value}"
             for integration, result in results
@@ -147,29 +151,35 @@ class OnboardingService:
         ]
         rejected = any(r.status_outcome == CheckOutcome.REJECTED for _, r in results)
         needs_review = any(r.status_outcome == CheckOutcome.MANUAL_REVIEW for _, r in results)
-
-        if rejected or needs_review:
-            outcome = CheckOutcome.REJECTED if rejected else CheckOutcome.MANUAL_REVIEW
-            application.transition_status(ApplicationStatus(outcome.value))
-            self.repository.update_application_status(application.id, application.status.value, application.version)
-            self.repository.save_decision(application.id, application.status.value, reasons)
-            SecurityAuditLogger.log_state_mutation(
-                application.id, "application_status", application.status.value, request_id
-            )
-            return {"status": application.status.value, "next_step_id": None, "reasons": reasons}
-
-        # All checks passed: advance to the next step, or approve if this was the last.
         next_step_id = flow.get_next_step_id(step_id)
-        if next_step_id is None:
-            application.transition_status(ApplicationStatus.APPROVED)
-        else:
-            application.transition_status(ApplicationStatus.IN_PROGRESS)
 
-        self.repository.update_application_status(application.id, application.status.value, application.version)
-        if next_step_id is None:
-            self.repository.save_decision(application.id, application.status.value, [])
+        if rejected:
+            final_status = ApplicationStatus.REJECTED
+        elif needs_review:
+            final_status = ApplicationStatus.MANUAL_REVIEW
+        elif next_step_id is None:
+            final_status = ApplicationStatus.APPROVED
+        else:
+            final_status = ApplicationStatus.IN_PROGRESS
+
+        is_final = final_status is not ApplicationStatus.IN_PROGRESS
+        decision_reasons = reasons if (rejected or needs_review) else []
+        application.transition_status(final_status)
+
+        # One transaction for every write: a concurrency conflict or duplicate step
+        # rolls back the whole submission, so the database never holds partial state.
+        with self.repository.atomic():
+            self.repository.save_step_response(application_id, step_id, form_data, current_hash)
+            for integration, result in results:
+                self.repository.log_integration_check(
+                    application_id, integration, result.status_outcome, result.raw_response_json, request_id
+                )
+            self.repository.update_application_status(application.id, final_status.value, application.version)
+            if is_final:
+                self.repository.save_decision(application.id, final_status.value, decision_reasons)
+
         SecurityAuditLogger.log_state_mutation(
-            application.id, "application_status", application.status.value, request_id
+            application.id, "application_status", final_status.value, request_id
         )
         logger.info(
             "step_submission_completed",
@@ -177,7 +187,11 @@ class OnboardingService:
                 "request_id": request_id,
                 "application_id": application_id,
                 "step_id": step_id,
-                "outcome": application.status.value,
+                "outcome": final_status.value,
             },
         )
-        return {"status": application.status.value, "next_step_id": next_step_id, "reasons": []}
+        return {
+            "status": final_status.value,
+            "next_step_id": None if is_final else next_step_id,
+            "reasons": decision_reasons,
+        }

@@ -1,6 +1,6 @@
 from domain.flow import FlowConfig, FlowStep, FormFieldConfig
-from domain.enums import AccountType, Country, IntegrationName, PiiCategory
-from domain.countries import TAX_RESIDENCY_OPTIONS
+from domain.enums import AccountType, Country, IntegrationName
+from domain.fields import FieldId
 
 poland_individual_flow = FlowConfig(
     country=Country.POLAND,
@@ -11,7 +11,7 @@ poland_individual_flow = FlowConfig(
             title="PESEL Verification",
             description="Enter your PESEL so we can run an eID-style identity mock.",
             fields=[
-                FormFieldConfig("personal_identity_number", "text", True, pii_category=PiiCategory.NATIONAL_ID),
+                FormFieldConfig(FieldId.PERSONAL_IDENTITY_NUMBER),
             ],
             required_integrations=[IntegrationName.IDENTITY],
         ),
@@ -20,8 +20,8 @@ poland_individual_flow = FlowConfig(
             title="Contact and Registered Address",
             description="Confirm your phone number and registered address.",
             fields=[
-                FormFieldConfig("address", "text", True, pii_category=PiiCategory.ADDRESS),
-                FormFieldConfig("phone_number", "text", True, pii_category=PiiCategory.PHONE),
+                FormFieldConfig(FieldId.ADDRESS),
+                FormFieldConfig(FieldId.PHONE_NUMBER),
             ],
             required_integrations=[IntegrationName.ADDRESS_LOOKUP],
         ),
@@ -30,8 +30,8 @@ poland_individual_flow = FlowConfig(
             title="Regulatory Declarations",
             description="Confirm PEP status, sanctions declaration and tax residency.",
             fields=[
-                FormFieldConfig("is_pep", "boolean", True),
-                FormFieldConfig("tax_residency", "select", True, TAX_RESIDENCY_OPTIONS),
+                FormFieldConfig(FieldId.IS_PEP),
+                FormFieldConfig(FieldId.TAX_RESIDENCY),
             ],
             required_integrations=[IntegrationName.SANCTIONS],
         ),
@@ -40,9 +40,9 @@ poland_individual_flow = FlowConfig(
             title="BIK-style Affordability",
             description="Provide income and affordability information for the credit mock.",
             fields=[
-                FormFieldConfig("monthly_income", "number", True),
-                FormFieldConfig("monthly_expenses", "number", True),
-                FormFieldConfig("outstanding_debts", "number", True),
+                FormFieldConfig(FieldId.MONTHLY_INCOME),
+                FormFieldConfig(FieldId.MONTHLY_EXPENSES),
+                FormFieldConfig(FieldId.OUTSTANDING_DEBTS),
             ],
             required_integrations=[IntegrationName.CREDIT_BUREAU],
         ),

@@ -1,18 +1,19 @@
 from domain.ports import CreditBureauService
 from domain.decisioning import CreditAssessment
+from domain.enums import DebtFlag
 
 
 class MockCreditBureauService(CreditBureauService):
     """Deterministic credit bureau mock; reports signals, does not decide."""
 
-    def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> CreditAssessment:
+    async def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> CreditAssessment:
         disposable_income = monthly_income - monthly_expenses
         debt_to_income_ratio = outstanding_debts / monthly_income if monthly_income > 0 else 0.0
 
         if disposable_income <= 0:
-            score, flags = 310, ("NEGATIVE_SURPLUS",)
+            score, flags = 310, (DebtFlag.NEGATIVE_SURPLUS.value,)
         elif debt_to_income_ratio > 0.60:
-            score, flags = 480, ("HIGH_LEVERAGE_RISK",)
+            score, flags = 480, (DebtFlag.HIGH_LEVERAGE_RISK.value,)
         else:
             score, flags = 780, ()
 

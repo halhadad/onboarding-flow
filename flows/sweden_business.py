@@ -1,5 +1,6 @@
 from domain.flow import FlowConfig, FlowStep, FormFieldConfig
-from domain.enums import AccountType, Country, IntegrationName, PiiCategory, Sector
+from domain.enums import AccountType, Country, IntegrationName
+from domain.fields import FieldId, LEGAL_FORMS_SWEDEN
 
 sweden_business_flow = FlowConfig(
     country=Country.SWEDEN,
@@ -10,9 +11,9 @@ sweden_business_flow = FlowConfig(
             title="Company Details",
             description="Enter organisation number, legal name and legal form.",
             fields=[
-                FormFieldConfig("company_identifier", "text", True, pii_category=PiiCategory.COMPANY_ID),
-                FormFieldConfig("legal_name", "text", True),
-                FormFieldConfig("legal_form", "select", True, ["AB", "HB", "Enskild firma"]),
+                FormFieldConfig(FieldId.COMPANY_IDENTIFIER),
+                FormFieldConfig(FieldId.LEGAL_NAME),
+                FormFieldConfig(FieldId.LEGAL_FORM, options_override=LEGAL_FORMS_SWEDEN),
             ],
             required_integrations=[IntegrationName.REGISTRY],
         ),
@@ -21,9 +22,9 @@ sweden_business_flow = FlowConfig(
             title="Authorised Representative",
             description="Confirm the representative and signatory authority.",
             fields=[
-                FormFieldConfig("representative_name", "text", True),
-                FormFieldConfig("representative_id", "text", True, pii_category=PiiCategory.NATIONAL_ID),
-                FormFieldConfig("has_signatory_authority", "boolean", True, requires_true=True),
+                FormFieldConfig(FieldId.REPRESENTATIVE_NAME),
+                FormFieldConfig(FieldId.REPRESENTATIVE_ID),
+                FormFieldConfig(FieldId.HAS_SIGNATORY_AUTHORITY, requires_true=True),
             ],
             required_integrations=[IntegrationName.REPRESENTATIVE],
         ),
@@ -32,8 +33,8 @@ sweden_business_flow = FlowConfig(
             title="Beneficial Owners",
             description="Capture beneficial owner count and highest ownership percentage.",
             fields=[
-                FormFieldConfig("ubo_count", "number", True),
-                FormFieldConfig("largest_ownership_percent", "number", True),
+                FormFieldConfig(FieldId.UBO_COUNT),
+                FormFieldConfig(FieldId.LARGEST_OWNERSHIP_PERCENT),
             ],
             required_integrations=[IntegrationName.UBO_KYC, IntegrationName.SANCTIONS],
         ),
@@ -42,9 +43,9 @@ sweden_business_flow = FlowConfig(
             title="Business Activity",
             description="Provide business activity, turnover and expected usage.",
             fields=[
-                FormFieldConfig("sector", "select", True, [s.value for s in Sector]),
-                FormFieldConfig("annual_turnover", "number", True),
-                FormFieldConfig("expected_monthly_volume", "number", True),
+                FormFieldConfig(FieldId.SECTOR),
+                FormFieldConfig(FieldId.ANNUAL_TURNOVER),
+                FormFieldConfig(FieldId.EXPECTED_MONTHLY_VOLUME),
             ],
             required_integrations=[IntegrationName.BUSINESS_CREDIT],
         ),

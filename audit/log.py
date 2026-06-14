@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
+from domain.enums import AuditField
 
 
 class JsonFormatter(logging.Formatter):
@@ -12,21 +13,9 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        for key in [
-            "request_id",
-            "application_id",
-            "component",
-            "outcome",
-            "method",
-            "path",
-            "status_code",
-            "duration_ms",
-            "step_id",
-            "country",
-            "account_type",
-        ]:
-            if hasattr(record, key):
-                payload[key] = getattr(record, key)
+        for field in AuditField:
+            if hasattr(record, field.value):
+                payload[field.value] = getattr(record, field.value)
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         return json.dumps(payload, sort_keys=True)
@@ -53,10 +42,10 @@ class SecurityAuditLogger:
         logger.info(
             "state_mutation",
             extra={
-                "application_id": application_id,
-                "component": element,
-                "outcome": status_outcome,
-                "request_id": request_id,
+                AuditField.APPLICATION_ID.value: application_id,
+                AuditField.COMPONENT.value: element,
+                AuditField.OUTCOME.value: status_outcome,
+                AuditField.REQUEST_ID.value: request_id,
             },
         )
 
@@ -65,9 +54,9 @@ class SecurityAuditLogger:
         logger.info(
             "integration_check",
             extra={
-                "application_id": application_id,
-                "component": service_name,
-                "outcome": status_outcome,
-                "request_id": request_id,
+                AuditField.APPLICATION_ID.value: application_id,
+                AuditField.COMPONENT.value: service_name,
+                AuditField.OUTCOME.value: status_outcome,
+                AuditField.REQUEST_ID.value: request_id,
             },
         )

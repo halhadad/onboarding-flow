@@ -4,6 +4,8 @@ import uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from domain.enums import AuditField
+
 logger = logging.getLogger("onboarding.request")
 
 class BankingSecurityAuditMiddleware(BaseHTTPMiddleware):
@@ -21,10 +23,10 @@ class BankingSecurityAuditMiddleware(BaseHTTPMiddleware):
             logger.exception(
                 "request_failed",
                 extra={
-                    "request_id": request.state.request_id,
-                    "method": request.method,
-                    "path": request.url.path,
-                    "duration_ms": duration_ms,
+                    AuditField.REQUEST_ID.value: request.state.request_id,
+                    AuditField.METHOD.value: request.method,
+                    AuditField.PATH.value: request.url.path,
+                    AuditField.DURATION_MS.value: duration_ms,
                 },
             )
             raise
@@ -35,11 +37,11 @@ class BankingSecurityAuditMiddleware(BaseHTTPMiddleware):
         logger.info(
             "request_completed",
             extra={
-                "request_id": request.state.request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": duration_ms,
+                AuditField.REQUEST_ID.value: request.state.request_id,
+                AuditField.METHOD.value: request.method,
+                AuditField.PATH.value: request.url.path,
+                AuditField.STATUS_CODE.value: response.status_code,
+                AuditField.DURATION_MS.value: duration_ms,
             },
         )
         return response

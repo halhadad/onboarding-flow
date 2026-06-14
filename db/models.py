@@ -1,84 +1,81 @@
-from datetime import datetime, timezone
-import uuid
-from sqlalchemy import Column, String, Integer, DateTime, Text, UniqueConstraint, ForeignKey
-from sqlalchemy.orm import declarative_base, relationship
+from datetime import datetime
+from typing import List, Optional
+
+from sqlalchemy import String, Integer, DateTime, Text, UniqueConstraint, ForeignKey
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
 from domain.states import ApplicationStatus
+from shared.util import new_uuid as generate_uuid, now_utc as utc_now
 
-Base = declarative_base()
 
-def generate_uuid() -> str:
-    return str(uuid.uuid4())
+class Base(DeclarativeBase):
+    pass
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 class ApplicationRecord(Base):
     __tablename__ = "applications"
 
-    id = Column(String, primary_key=True, default=generate_uuid)
-    country = Column(String, nullable=False)
-    account_type = Column(String, nullable=False)
-    status = Column(String, nullable=False, default=ApplicationStatus.STARTED.value)
-    current_step_index = Column(Integer, default=0, nullable=False)
-    version = Column(Integer, default=1, nullable=False)
-    resume_token = Column(String, unique=True, index=True, nullable=True, default=generate_uuid)
-    resume_token_expires_at = Column(DateTime, nullable=True)
-    request_id = Column(String, nullable=False)
-    created_at = Column(DateTime, default=utc_now, nullable=False)
-    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_uuid)
+    country: Mapped[str] = mapped_column(String, nullable=False)
+    account_type: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default=ApplicationStatus.STARTED.value)
+    current_step_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    resume_token: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, default=generate_uuid)
+    resume_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    request_id: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
-    # relationships
-    step_responses = relationship("StepResponseRecord", back_populates="application", cascade="all, delete-orphan")
-    integration_logs = relationship("IntegrationLogRecord", back_populates="application", cascade="all, delete-orphan")
-    decision = relationship("DecisionRecord", back_populates="application", uselist=False, cascade="all, delete-orphan")
+    step_responses: Mapped[List["StepResponseRecord"]] = relationship(
+        back_populates="application", cascade="all, delete-orphan"
+    )
+    integration_logs: Mapped[List["IntegrationLogRecord"]] = relationship(
+        back_populates="application", cascade="all, delete-orphan"
+    )
+    decision: Mapped[Optional["DecisionRecord"]] = relationship(
+        back_populates="application", uselist=False, cascade="all, delete-orphan"
+    )
+
 
 class StepResponseRecord(Base):
     __tablename__ = "step_responses"
 
-    id = Column(String, primary_key=True, default=generate_uuid)
-    
-    application_id = Column(String, ForeignKey("applications.id"), index=True, nullable=False)
-    
-    step_id = Column(String, nullable=False)
-    form_data_json = Column(Text, nullable=False)
-    payload_hash = Column(String, nullable=False)
-    completed_at = Column(DateTime, default=utc_now, nullable=False)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_uuid)
+    application_id: Mapped[str] = mapped_column(ForeignKey("applications.id"), index=True, nullable=False)
+    step_id: Mapped[str] = mapped_column(String, nullable=False)
+    form_data_json: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String, nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
-    application = relationship("ApplicationRecord", back_populates="step_responses")
+    application: Mapped["ApplicationRecord"] = relationship(back_populates="step_responses")
 
-    __table_args__ = (
-        UniqueConstraint('application_id', 'step_id', name='_app_step_uc'),
-    )
+    __table_args__ = (UniqueConstraint("application_id", "step_id", name="_app_step_uc"),)
+
 
 class DecisionRecord(Base):
-    """Final decision plus the reasons that drove it."""
     __tablename__ = "decisions"
 
-    id = Column(String, primary_key=True, default=generate_uuid)
-    application_id = Column(String, ForeignKey("applications.id"), unique=True, index=True, nullable=False)
-    outcome = Column(String, nullable=False)
-    reasons_json = Column(Text, nullable=False, default="[]")
-    decided_at = Column(DateTime, default=utc_now, nullable=False)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_uuid)
+    application_id: Mapped[str] = mapped_column(ForeignKey("applications.id"), unique=True, index=True, nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    reasons_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    decided_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
-    application = relationship("ApplicationRecord", back_populates="decision")
+    application: Mapped["ApplicationRecord"] = relationship(back_populates="decision")
 
 
 class IntegrationLogRecord(Base):
     __tablename__ = "integration_logs"
 
-    id = Column(String, primary_key=True, default=generate_uuid)
-    
-    # FIX: Explicit ForeignKey constraint
-    application_id = Column(String, ForeignKey("applications.id"), index=True, nullable=False)
-    
-    service_name = Column(String, nullable=False)
-    status_outcome = Column(String, nullable=False)
-    raw_response_json = Column(Text, nullable=False)
-    request_id = Column(String, nullable=False)
-    executed_at = Column(DateTime, default=utc_now, nullable=False)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=generate_uuid)
+    application_id: Mapped[str] = mapped_column(ForeignKey("applications.id"), index=True, nullable=False)
+    service_name: Mapped[str] = mapped_column(String, nullable=False)
+    status_outcome: Mapped[str] = mapped_column(String, nullable=False)
+    raw_response_json: Mapped[str] = mapped_column(Text, nullable=False)
+    request_id: Mapped[str] = mapped_column(String, nullable=False)
+    executed_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
 
-    application = relationship("ApplicationRecord", back_populates="integration_logs")
+    application: Mapped["ApplicationRecord"] = relationship(back_populates="integration_logs")
 
-    __table_args__ = (
-        UniqueConstraint('application_id', 'service_name', 'request_id', name='_app_service_request_uc'),
-    )
+    __table_args__ = (UniqueConstraint("application_id", "service_name", "request_id", name="_app_service_request_uc"),)

@@ -1,24 +1,39 @@
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
-from domain.enums import PiiCategory
+from domain.fields import FieldId, FieldSpec, field_spec
 
 @dataclass(frozen=True)
 class FormFieldConfig:
-    field_name: str
-    field_type: str  # text, number, select, boolean
-    is_required: bool
-    options: Sequence[str] = field(default_factory=tuple)
+    field_id: FieldId
+    is_required: bool = True
     requires_true: bool = False
-    # When set, the field is PII; drives log redaction (and encryption in production).
-    pii_category: Optional[PiiCategory] = None
+    # Override the catalog options when a select varies by market (e.g. legal_form).
+    options_override: Optional[Sequence[str]] = None
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "options", tuple(self.options))
+    @property
+    def spec(self) -> FieldSpec:
+        return field_spec(self.field_id)
+
+    @property
+    def field_name(self) -> str:
+        return self.spec.key.value
+
+    @property
+    def field_type(self) -> str:
+        return self.spec.field_type.value
+
+    @property
+    def options(self) -> Sequence[str]:
+        return tuple(self.options_override) if self.options_override is not None else self.spec.options
 
     @property
     def is_sensitive(self) -> bool:
-        return self.pii_category is not None
+        return self.spec.sensitive
+
+    @property
+    def display_label(self) -> str:
+        return self.spec.label
 
 @dataclass(frozen=True)
 class FlowStep:

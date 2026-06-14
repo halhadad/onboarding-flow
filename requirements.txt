@@ -6,5 +6,5 @@ pytest
 pytest-asyncio
 httpx
 jinja2
-sqlalchemy
+sqlalchemy>=2.0
 python-multipart

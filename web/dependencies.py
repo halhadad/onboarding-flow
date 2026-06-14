@@ -11,6 +11,7 @@ from integrations.bank_account import MockBankAccountService
 from domain.decisioning import AutomatedDecisionEngine
 from domain.flow_registry import flow_registry
 from services.onboarding_service import OnboardingService
+from config import settings
 
 
 def get_db_session() -> Generator[Session, None, None]:
@@ -31,10 +32,17 @@ def get_onboarding_service(
     return OnboardingService(
         repository=repository,
         identity_service=MockIdentityVerificationService(),
-        sanctions_service=MockSanctionsCheckService(),
+        sanctions_service=MockSanctionsCheckService(sanctioned_residencies=settings.SANCTIONED_RESIDENCIES),
         credit_service=MockCreditBureauService(),
         registry_service=MockRegistryService(),
         bank_account_service=MockBankAccountService(),
-        decision_engine=AutomatedDecisionEngine(),
+        decision_engine=AutomatedDecisionEngine(
+            high_dti_threshold=settings.DTI_THRESHOLD,
+            concentrated_ownership_threshold=settings.OWNERSHIP_CONCENTRATION_THRESHOLD,
+            high_risk_sectors=settings.HIGH_RISK_SECTORS,
+        ),
         registry=flow_registry,
+        integration_timeout_seconds=settings.INTEGRATION_TIMEOUT_SECONDS,
+        integration_max_attempts=settings.INTEGRATION_MAX_ATTEMPTS,
+        integration_demo_delay_seconds=settings.INTEGRATION_DEMO_DELAY_SECONDS,
     )

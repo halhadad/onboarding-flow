@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
 from integrations.credit import MockCreditBureauService
@@ -19,14 +20,16 @@ class InMemoryRepository:
         self.decisions = {}
         self.version = 1
 
-    def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> None:
+    @contextmanager
+    def atomic(self):
+        yield
+
+    def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> str:
         self.status[application_id] = "STARTED"
+        return "token"
 
     def get_application_status(self, application_id: str) -> Optional[str]:
         return self.status.get(application_id)
-
-    def get_application_version(self, application_id: str) -> Optional[int]:
-        return self.version if application_id in self.status else None
 
     def get_application_context(self, application_id: str) -> Optional[Dict[str, Any]]:
         if application_id not in self.status:
@@ -56,21 +59,25 @@ class InMemoryRepository:
         self.decisions[application_id] = (outcome, reasons)
 
 
-def test_business_profile_runs_bank_account_after_approved_business_credit():
-    repository = InMemoryRepository()
-    repository.responses[("app-1", "business_identity")] = {"form_data": {}, "payload_hash": "h1"}
-    repository.responses[("app-1", "representative")] = {"form_data": {}, "payload_hash": "h2"}
-    repository.responses[("app-1", "beneficial_owners")] = {"form_data": {}, "payload_hash": "h3"}
-    service = OnboardingService(
+def _service(repository, credit_service=None):
+    return OnboardingService(
         repository=repository,
         identity_service=MockIdentityVerificationService(),
         sanctions_service=MockSanctionsCheckService(),
-        credit_service=MockCreditBureauService(),
+        credit_service=credit_service or MockCreditBureauService(),
         registry_service=MockRegistryService(),
         bank_account_service=MockBankAccountService(),
     )
 
-    result = service.process_step_submission(
+
+async def test_business_profile_runs_bank_account_after_approved_business_credit():
+    repository = InMemoryRepository()
+    repository.responses[("app-1", "business_identity")] = {"form_data": {}, "payload_hash": "h1"}
+    repository.responses[("app-1", "representative")] = {"form_data": {}, "payload_hash": "h2"}
+    repository.responses[("app-1", "beneficial_owners")] = {"form_data": {}, "payload_hash": "h3"}
+    service = _service(repository)
+
+    result = await service.process_step_submission(
         application_id="app-1",
         country="SPAIN",
         account_type="business",
@@ -91,22 +98,15 @@ def test_business_profile_runs_bank_account_after_approved_business_credit():
     assert repository.decisions["app-1"] == ("MANUAL_REVIEW", ["bank_account:MANUAL_REVIEW"])
 
 
-def test_step_collects_all_reasons_and_takes_the_worst_outcome():
+async def test_step_collects_all_reasons_and_takes_the_worst_outcome():
     # business_profile runs business_credit (reject) AND bank_account (review).
     # Both run; all reasons are recorded; the worst outcome (REJECTED) wins.
     repository = InMemoryRepository()
     for step_id in ("business_identity", "representative", "beneficial_owners"):
         repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
-    service = OnboardingService(
-        repository=repository,
-        identity_service=MockIdentityVerificationService(),
-        sanctions_service=MockSanctionsCheckService(),
-        credit_service=MockCreditBureauService(),
-        registry_service=MockRegistryService(),
-        bank_account_service=MockBankAccountService(),
-    )
+    service = _service(repository)
 
-    result = service.process_step_submission(
+    result = await service.process_step_submission(
         application_id="app-1",
         country="SPAIN",
         account_type="business",
@@ -127,22 +127,15 @@ def test_step_collects_all_reasons_and_takes_the_worst_outcome():
     assert repository.decisions["app-1"][0] == "REJECTED"
 
 
-def test_affordability_decision_flows_through_the_engine():
+async def test_affordability_decision_flows_through_the_engine():
     # Negative disposable income must drive a REJECTED outcome decided by the
     # AutomatedDecisionEngine (the credit mock only reports raw signals).
     repository = InMemoryRepository()
     for step_id in ("collect_identity", "confirm_contact", "regulatory_declarations"):
         repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
-    service = OnboardingService(
-        repository=repository,
-        identity_service=MockIdentityVerificationService(),
-        sanctions_service=MockSanctionsCheckService(),
-        credit_service=MockCreditBureauService(),
-        registry_service=MockRegistryService(),
-        bank_account_service=MockBankAccountService(),
-    )
+    service = _service(repository)
 
-    result = service.process_step_submission(
+    result = await service.process_step_submission(
         application_id="app-1",
         country="SWEDEN",
         account_type="private",
@@ -157,7 +150,7 @@ def test_affordability_decision_flows_through_the_engine():
     assert repository.decisions["app-1"] == ("REJECTED", ["credit_bureau:REJECTED"])
 
 
-def test_transient_provider_failure_does_not_persist_or_manual_review():
+async def test_transient_provider_failure_does_not_persist_or_manual_review():
     # A provider outage must surface as a transient error, leave the step
     # un-saved (so a retry re-runs it), and never park the application.
     repository = InMemoryRepository()
@@ -165,20 +158,13 @@ def test_transient_provider_failure_does_not_persist_or_manual_review():
         repository.responses[("app-1", step_id)] = {"form_data": {}, "payload_hash": f"h-{step_id}"}
 
     class FailingCreditService:
-        def evaluate(self, *args, **kwargs):
+        async def evaluate(self, *args, **kwargs):
             raise ConnectionError("bureau unreachable")
 
-    service = OnboardingService(
-        repository=repository,
-        identity_service=MockIdentityVerificationService(),
-        sanctions_service=MockSanctionsCheckService(),
-        credit_service=FailingCreditService(),
-        registry_service=MockRegistryService(),
-        bank_account_service=MockBankAccountService(),
-    )
+    service = _service(repository, credit_service=FailingCreditService())
 
     with pytest.raises(IntegrationUnavailableError):
-        service.process_step_submission(
+        await service.process_step_submission(
             application_id="app-1",
             country="SWEDEN",
             account_type="private",
@@ -193,19 +179,12 @@ def test_transient_provider_failure_does_not_persist_or_manual_review():
     assert repository.integration_logs == []
 
 
-def test_service_rejects_step_skipping():
+async def test_service_rejects_step_skipping():
     repository = InMemoryRepository()
-    service = OnboardingService(
-        repository=repository,
-        identity_service=MockIdentityVerificationService(),
-        sanctions_service=MockSanctionsCheckService(),
-        credit_service=MockCreditBureauService(),
-        registry_service=MockRegistryService(),
-        bank_account_service=MockBankAccountService(),
-    )
+    service = _service(repository)
 
     with pytest.raises(StateTransitionError, match="cannot be submitted"):
-        service.process_step_submission(
+        await service.process_step_submission(
             application_id="app-1",
             country="SWEDEN",
             account_type="private",
@@ -220,24 +199,17 @@ def test_service_rejects_step_skipping():
         )
 
 
-def test_service_short_circuits_idempotent_repeat_submission():
+async def test_service_short_circuits_idempotent_repeat_submission():
     repository = InMemoryRepository()
-    service = OnboardingService(
-        repository=repository,
-        identity_service=MockIdentityVerificationService(),
-        sanctions_service=MockSanctionsCheckService(),
-        credit_service=MockCreditBureauService(),
-        registry_service=MockRegistryService(),
-        bank_account_service=MockBankAccountService(),
-    )
+    service = _service(repository)
     form_data = {"personal_identity_number": "199001011234"}
-    payload_hash = service._generate_idempotency_key(form_data)
+    payload_hash = service._payload_fingerprint(form_data)
     repository.responses[("app-1", "collect_identity")] = {
         "form_data": {"personal_identity_number": "***1234"},
         "payload_hash": payload_hash,
     }
 
-    result = service.process_step_submission(
+    result = await service.process_step_submission(
         application_id="app-1",
         country="SWEDEN",
         account_type="private",
@@ -251,20 +223,13 @@ def test_service_short_circuits_idempotent_repeat_submission():
     assert repository.integration_logs == []
 
 
-def test_service_rejects_terminal_application_mutation():
+async def test_service_rejects_terminal_application_mutation():
     repository = InMemoryRepository()
     repository.status["app-1"] = "APPROVED"
-    service = OnboardingService(
-        repository=repository,
-        identity_service=MockIdentityVerificationService(),
-        sanctions_service=MockSanctionsCheckService(),
-        credit_service=MockCreditBureauService(),
-        registry_service=MockRegistryService(),
-        bank_account_service=MockBankAccountService(),
-    )
+    service = _service(repository)
 
     with pytest.raises(StateTransitionError, match="can no longer be modified"):
-        service.process_step_submission(
+        await service.process_step_submission(
             application_id="app-1",
             country="SWEDEN",
             account_type="private",

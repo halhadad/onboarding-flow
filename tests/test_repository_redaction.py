@@ -1,38 +1,38 @@
 import json
 
-from services.pii import redact_integration_payload
+from services.redaction import redact_integration_payload
 
 
-def test_integration_payload_redacts_sensitive_keys():
+def test_integration_payload_redacts_emitted_sensitive_keys():
+    # Only keys our providers actually emit are redacted; innocent keys are kept.
     payload = redact_integration_payload(
         json.dumps(
             {
-                "income": 5000,
-                "expenses": 2000,
-                "tax_residency": "SE",
+                "score": 780,
+                "disposable_income": 3200,
+                "matched_country": "IR",
                 "outcome": "APPROVED",
             }
         )
     )
 
-    assert json.loads(payload) == {
-        "expenses": "***",
-        "income": "***",
-        "outcome": "APPROVED",
-        "tax_residency": "***",
-    }
+    result = json.loads(payload)
+    assert result["disposable_income"] == "[REDACTED]"
+    assert result["matched_country"] == "[REDACTED]"
+    assert result["score"] == 780
+    assert result["outcome"] == "APPROVED"
 
 
 def test_integration_payload_redacts_nested_and_listed_sensitive_fields():
-    # A real provider can bury PII inside nested objects/lists; the redaction
-    # must walk the whole structure, not just the root keys.
+    # A provider can bury sensitive values in nested objects/lists; redaction
+    # walks the whole structure, and masks by key regardless of value type.
     payload = redact_integration_payload(
         json.dumps(
             {
                 "status": "COMPLETED",
                 "applicant_profile": {
                     "personal_identity_number": "199001011234",
-                    "monthly_income": 45000,
+                    "disposable_income": 45000,
                     "city": "Stockholm",
                 },
                 "accounts": [{"iban": "SE1234"}],
@@ -42,7 +42,7 @@ def test_integration_payload_redacts_nested_and_listed_sensitive_fields():
 
     result = json.loads(payload)
     assert result["status"] == "COMPLETED"
-    assert result["applicant_profile"]["personal_identity_number"] == "***"
-    assert result["applicant_profile"]["monthly_income"] == "***"
+    assert result["applicant_profile"]["personal_identity_number"] == "[REDACTED]"
+    assert result["applicant_profile"]["disposable_income"] == "[REDACTED]"
     assert result["applicant_profile"]["city"] == "Stockholm"
-    assert result["accounts"][0]["iban"] == "***"
+    assert result["accounts"][0]["iban"] == "[REDACTED]"

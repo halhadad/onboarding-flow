@@ -1,4 +1,5 @@
 from typing import Dict, List, Tuple
+from domain.exceptions import FlowRegistryError
 from domain.flow import FlowConfig
 from flows.sweden_individual import sweden_individual_flow
 from flows.sweden_business import sweden_business_flow
@@ -7,8 +8,6 @@ from flows.spain_business import spain_business_flow
 from flows.poland_individual import poland_individual_flow
 from flows.poland_business import poland_business_flow
 
-class FlowRegistryError(Exception):
-    pass
 
 class FlowRegistry:
     def __init__(self):

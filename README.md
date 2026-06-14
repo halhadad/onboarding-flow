@@ -57,7 +57,7 @@ The compose setup stores SQLite data in a named Docker volume and injects local 
 ## Architecture
 
 - `web/`: FastAPI routes, request parsing, validation orchestration and dependency wiring.
-- `templates/`: Jinja pages for start, step, resume, review and decision screens.
+- `templates/`: Jinja pages for start, step, resume and decision screens.
 - `flows/`: country and account-type flow configuration. Adding a new journey should mostly mean adding another `FlowConfig` and registering it.
 - `domain/`: flow model, status model, the decisioning engine and ports.
 - `services/`: onboarding and resume use cases, plus the `IntegrationRunner`.
@@ -67,11 +67,11 @@ The compose setup stores SQLite data in a named Docker volume and injects local 
 
 Responsibilities are deliberately separated so each has one reason to change:
 
-- `OnboardingService` orchestrates a step — guards state, persists, and sequences the checks.
-- `IntegrationRunner` knows *how* to call each mock provider and fail safe.
-- `AutomatedDecisionEngine` is the single place where provider signals become an approve/refer/reject decision; the credit and sanctions mocks return raw signals only.
+- `OnboardingService` orchestrates a step: guards state, persists, and sequences the checks.
+- `IntegrationRunner` knows how to call each mock provider and fail safe.
+- `AutomatedDecisionEngine` owns risk policy; provider authority checks return their own verdict (see ARCHITECTURE.md).
 
-The web layer has no per-step controller branch — steps are driven by declarative `FlowConfig` definitions.
+The web layer has no per-step controller branch; steps are driven by declarative `FlowConfig` definitions.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a simple layer diagram and request flow.
 
@@ -80,19 +80,27 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a simple layer diagram and request fl
 - `applications`: selected country/type, current status, optimistic version, request ID, resume handle, handle expiry and timestamps.
 - `step_responses`: one saved response per application step, with a payload hash for idempotency.
 - `integration_logs`: append-only audit-style record of mocked external checks, outcome, request ID and execution time.
-- `decisions`: one row per application — the final `outcome` plus the structured `reasons` that drove it (e.g. `credit_bureau:REJECTED`), so "why was this rejected / referred?" is answerable directly rather than reconstructed from logs.
+- `decisions`: one row per application: the final `outcome` plus the structured `reasons` that drove it (e.g. `credit_bureau:REJECTED`). Reasons are for back office and audit only; the customer-facing decision page never shows them, just a generic status and a reference. Showing them would leak thresholds and risk tipping off.
 
 ### Handling sensitive data
 
-Captured answers are stored **as entered** in `step_responses`. A bank legitimately needs to read these back (support, review, compliance), so redacting them into oblivion would be the wrong default — it destroys data the business owns. Protecting them is a *storage* concern: in production this means encryption at rest (e.g. KMS-backed column/field encryption), tokenisation of the highest-sensitivity identifiers, access control and a retention policy. This sample uses a local SQLite database and is explicitly not production-secure storage.
+Captured answers are stored as entered in `step_responses`. A bank legitimately needs to read these back (support, review, compliance), so redacting them into oblivion would be the wrong default; it destroys data the business owns. Protecting them is a storage concern: in production this means encryption at rest (e.g. KMS backed column/field encryption), tokenisation of the highest sensitivity identifiers, access control and a retention policy. This sample uses a local SQLite database and is explicitly not production secure storage.
 
-What we *do* keep clean is the **audit/operational trail**. Provider responses written to `integration_logs` are redacted before storage, and that redaction walks nested structures so a sensitive value buried inside an object cannot leak. Which fields/keys count as sensitive is driven by the flow schema (`FormFieldConfig.pii_category`) plus the known financial-signal keys — one source of truth, no separate list to drift. The same `pii_category` marking is what would drive field-level encryption in production.
+What we do keep clean is the audit/operational trail. Provider responses written to `integration_logs` are redacted before storage. Redaction is key based (it masks the whole value with `[REDACTED]` regardless of type) and walks nested structures, so a sensitive value buried inside an object cannot leak. The key set is derived from the field catalog (`domain/fields.py`): every `FieldSpec` declares a `sensitive` clearance that defaults to `True`, so the design is secure by default, a field that forgets to declare itself is masked rather than leaked, and only fields explicitly cleared as non sensitive (e.g. `legal_form`, `sector`) pass through. The set is the catalog's sensitive fields plus two non field provider signal keys (`disposable_income`, `matched_country`); it stays narrow so innocent keys like `status` are not masked. Production would use path aware redaction.
 
-Step idempotency uses a plain SHA-256 fingerprint of the submitted payload to detect an unchanged re-submission and skip re-running its checks. It is change-detection, not a security signature, so it deliberately uses no HMAC/secret — that would be ceremony with no threat to defend against here.
+Step idempotency uses a plain SHA-256 fingerprint of the submitted payload to detect an unchanged resubmission and skip re-running its checks. It is change detection, not a security signature, so it deliberately uses no HMAC or secret.
 
 ### External check failures
 
-Provider calls are wrapped so a transient outage is treated as exactly that: the runner raises `IntegrationUnavailableError`, the step is **not** saved, and the web layer returns a 503 asking the customer to retry. A network failure is never converted into a `MANUAL_REVIEW` outcome — doing so would flood back-office queues with healthy applications during any provider blip. In production this boundary is where retries with backoff and a circuit breaker would live.
+Integrations are async. Each call runs under a per attempt timeout (`asyncio.wait_for`) with a small retry loop; a configurable demo delay can simulate latency. A transient outage is treated as exactly that: the runner raises `IntegrationUnavailableError`, the step is not saved, and the web layer returns 503 asking the customer to retry. A network failure is never converted into a `MANUAL_REVIEW` outcome; doing so would flood back office queues with healthy applications during a provider blip. Timeouts, attempts and delay are in `config.Settings`. Backoff and a circuit breaker would be the next production step.
+
+### Concurrency, transactions and configuration
+
+A step submission writes the step response, integration logs, status update and decision inside a single unit of work (`repository.atomic()`): it commits once on success, or rolls back entirely on any error, so the database never holds partial state (ACID). Integrations run before the transaction opens, so the transaction stays short.
+
+Concurrency is optimistic: the form posts the `version` it was rendered with, and the status update runs `UPDATE ... WHERE version=?`, so a stale tab or a tampered value returns 409 (rolling back the whole submission) rather than overwriting newer state. The posted value is only ever used inside that guard.
+
+Decisioning thresholds (DTI, ownership concentration, high risk sectors) and integration timeouts live in `config.Settings` and are injected at startup, rather than hardcoded in the domain.
 
 ## Deterministic mock behavior
 
@@ -103,7 +111,7 @@ Provider calls are wrapped so a transient outage is treated as exactly that: the
 - Representative: missing signatory authority goes to manual review.
 - UBO: missing UBO rejects; very concentrated ownership goes to manual review.
 - Business credit: zero turnover rejects; high-risk sector or expected monthly volume above turnover goes to manual review.
-- Bank account: IBANs ending in `9999` simulate a name mismatch and go to manual review.
+- Bank account: IBANs ending in `9999` simulate a name mismatch and go to manual review; IBANs ending in `0000` simulate an unreachable provider (the call times out, is retried, then returns 503).
 
 ## Assumptions and tradeoffs
 

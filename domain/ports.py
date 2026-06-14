@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from contextlib import AbstractContextManager
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 from domain.states import CheckOutcome
@@ -15,18 +16,13 @@ class IntegrationResult:
 class ApplicationRepository(ABC):
 
     @abstractmethod
-    def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> None:
-        """Initializes a new application record in the system."""
+    def create_application(self, application_id: str, country: str, account_type: str, request_id: str) -> str:
+        """Create a new application; return its resume token."""
         pass
 
     @abstractmethod
     def get_application_status(self, application_id: str) -> Optional[str]:
         """Retrieves the current status string of an application."""
-        pass
-
-    @abstractmethod
-    def get_application_version(self, application_id: str) -> Optional[int]:
-        """Retrieves the current optimistic concurrency version of an application."""
         pass
 
     @abstractmethod
@@ -55,11 +51,6 @@ class ApplicationRepository(ABC):
         pass
 
     @abstractmethod
-    def get_all_step_responses(self, application_id: str) -> Dict[str, Dict[str, Any]]:
-        """Retrieves every saved (already redacted) step response, keyed by step id."""
-        pass
-
-    @abstractmethod
     def log_integration_check(self, application_id: str, service_name: str, status_outcome: CheckOutcome, response_json: str, request_id: str) -> None:
         """Appends an execution log record to the immutable audit ledger."""
         pass
@@ -69,41 +60,40 @@ class ApplicationRepository(ABC):
         """Records (or replaces) the final automated decision and its reasons."""
         pass
 
+    @abstractmethod
+    def atomic(self) -> AbstractContextManager[None]:
+        """Unit of work: commit on success, roll back on any error."""
+        pass
+
 
 class IdentityVerificationService(ABC):
     @abstractmethod
-    def verify(self, personal_identity_number: str) -> IntegrationResult:
-        """Executes a country-specific identity or national registry check verification."""
+    async def verify(self, personal_identity_number: str) -> IntegrationResult:
+        """Identity provider check (async, network bound)."""
         pass
 
 class SanctionsCheckService(ABC):
     @abstractmethod
-    def check(self, tax_residency: str, is_pep: bool) -> SanctionsScreening:
-        """Screens against sanctions / PEP lists and returns the raw signals.
-
-        The verdict is left to the decision engine.
-        """
+    async def check(self, tax_residency: str, is_pep: bool) -> SanctionsScreening:
+        """Sanctions / PEP screening signals (async, network bound)."""
         pass
 
 class CreditBureauService(ABC):
     @abstractmethod
-    def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> CreditAssessment:
-        """Returns raw affordability signals (score, surplus, leverage, flags).
-
-        The verdict is left to the decision engine.
-        """
+    async def evaluate(self, monthly_income: float, monthly_expenses: float, outstanding_debts: float) -> CreditAssessment:
+        """Raw affordability signals (async, network bound)."""
         pass
 
 
 class RegistryLookupService(ABC):
     @abstractmethod
-    def lookup_entity(self, tax_id: str) -> IntegrationResult:
-        """Looks up a legal entity in a mocked business registry."""
+    async def lookup_entity(self, tax_id: str) -> IntegrationResult:
+        """Company registry lookup (async, network bound)."""
         pass
 
 
 class BankAccountValidationService(ABC):
     @abstractmethod
-    def validate_iban(self, iban: str) -> IntegrationResult:
-        """Validates a bank account identifier against a mocked bank service."""
+    async def validate_iban(self, iban: str) -> IntegrationResult:
+        """Bank account check (async, network bound)."""
         pass

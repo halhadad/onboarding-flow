@@ -110,10 +110,8 @@ async def start_application_view(
     account_type: str = Form(...),
     service: OnboardingService = Depends(get_onboarding_service)
 ):
-    application_id = str(uuid.uuid4())
-    # Correctly retrieve from middleware state
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    
+
     try:
         flow = flow_registry.get_flow(country, account_type)
     except FlowRegistryError:
@@ -124,26 +122,20 @@ async def start_application_view(
             status_code=400,
         )
 
-    service.repository.create_application(
-        application_id=application_id,
-        country=country,
-        account_type=account_type,
-        request_id=request_id
-    )
+    # Created in one transaction; the token is returned, so the cookie never
+    # depends on a read-back of an uncommitted row.
+    application_id, resume_token = service.start_application(country, account_type, request_id)
 
     first_step_id = flow.steps[0].step_id
-    
-    app_context = service.repository.get_application_context(application_id)
     url = f"/application/{application_id}/step/{first_step_id}?country={country}&type={account_type}"
     response = RedirectResponse(url=url, status_code=303)
-    if app_context and app_context.get("resume_token"):
-        response.set_cookie(
-            key=RESUME_COOKIE_NAME,
-            value=str(app_context["resume_token"]),
-            max_age=RESUME_COOKIE_MAX_AGE_SECONDS,
-            httponly=True,
-            samesite="lax",
-        )
+    response.set_cookie(
+        key=RESUME_COOKIE_NAME,
+        value=resume_token,
+        max_age=RESUME_COOKIE_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+    )
     return response
 
 @router.post("/application/resume", response_class=RedirectResponse)
@@ -213,56 +205,6 @@ async def render_step_view(
         }
     )
 
-@router.get("/application/{application_id}/review", response_class=HTMLResponse)
-async def review_view(
-    request: Request,
-    application_id: str,
-    country: str,
-    account_type: str = Query(alias="type"),
-    repository: SQLAlchemyApplicationRepository = Depends(get_application_repository),
-):
-    """Read only summary of captured data and remaining steps."""
-    app_context = _load_routable_application_context(
-        repository,
-        application_id,
-        country,
-        account_type,
-        request.cookies.get(RESUME_COOKIE_NAME),
-    )
-    stored_country = str(app_context["country"])
-    stored_account_type = str(app_context["account_type"])
-
-    try:
-        flow = flow_registry.get_flow(stored_country, stored_account_type)
-    except FlowRegistryError as err:
-        raise HTTPException(status_code=400, detail="Unsupported onboarding flow.") from err
-
-    saved_responses = repository.get_all_step_responses(application_id)
-    review_steps = []
-    for step in flow.steps:
-        response = saved_responses.get(step.step_id)
-        review_steps.append({
-            "title": step.title,
-            "step_id": step.step_id,
-            "completed": response is not None,
-            "fields": [
-                {"label": key.replace("_", " "), "value": value}
-                for key, value in (response or {}).items()
-            ],
-        })
-
-    return templates.TemplateResponse(
-        request,
-        "review.html",
-        {
-            "application_id": application_id,
-            "country": stored_country,
-            "type": stored_account_type,
-            "review_steps": review_steps,
-        },
-    )
-
-
 @router.post("/application/{application_id}/step/{step_id}", response_class=HTMLResponse)
 async def submit_step_view(
     request: Request,
@@ -270,6 +212,7 @@ async def submit_step_view(
     step_id: str,
     country: str = Form(...),
     account_type: str = Form(alias="type"),
+    version: int = Form(...),
     service: OnboardingService = Depends(get_onboarding_service)
 ):
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
@@ -295,7 +238,9 @@ async def submit_step_view(
     if not step_config:
         raise HTTPException(status_code=404, detail="The targeted configuration view step does not exist.")
 
-    current_version = int(app_context["version"])
+    # The DB version is used to re-render forms; the posted version (validated
+    # atomically by the repo's WHERE version=? guard) drives the concurrency check.
+    db_version = int(app_context["version"])
 
     try:
         clean_payload = validate_step_payload(step_config, country, form_dict)
@@ -308,20 +253,20 @@ async def submit_step_view(
                 "step": step_config,
                 "country": stored_country,
                 "type": stored_account_type,
-                "version": current_version,
+                "version": db_version,
                 "error_message": str(validation_err),
                 **_progress_context(flow, step_id),
             }
         )
 
     try:
-        result = service.process_step_submission(
+        result = await service.process_step_submission(
             application_id=application_id,
             country=stored_country,
             account_type=stored_account_type,
             step_id=step_id,
             form_data=clean_payload,
-            current_version=current_version,
+            current_version=version,
             request_id=request_id
         )
     except ConcurrentModificationError:
@@ -333,7 +278,7 @@ async def submit_step_view(
                 "step": step_config,
                 "country": stored_country,
                 "type": stored_account_type,
-                "version": current_version,
+                "version": db_version,
                 "error_message": "State conflict detected. Refresh this step before submitting again.",
                 **_progress_context(flow, step_id),
             },
@@ -348,7 +293,7 @@ async def submit_step_view(
                 "step": step_config,
                 "country": stored_country,
                 "type": stored_account_type,
-                "version": current_version,
+                "version": db_version,
                 "error_message": str(err),
                 **_progress_context(flow, step_id),
             },
@@ -364,7 +309,7 @@ async def submit_step_view(
                 "step": step_config,
                 "country": stored_country,
                 "type": stored_account_type,
-                "version": current_version,
+                "version": db_version,
                 "error_message": "A verification service is temporarily unavailable. Please submit again in a moment.",
                 **_progress_context(flow, step_id),
             },
@@ -374,12 +319,13 @@ async def submit_step_view(
     status_outcome = result["status"]
     next_step_id = result["next_step_id"]
 
-    # No next step means the flow ended; show the decision page.
+    # No next step means the flow ended; show the decision page. Internal reasons
+    # stay in the decisions table for back office; the customer sees a reference only.
     if not next_step_id:
         response = templates.TemplateResponse(
             request,
             "decision.html",
-            {"status": status_outcome, "reasons": result.get("reasons", [])},
+            {"status": status_outcome, "reference": application_id[:8].upper()},
         )
         response.delete_cookie(RESUME_COOKIE_NAME)
         return response
