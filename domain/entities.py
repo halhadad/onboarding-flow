@@ -1,5 +1,4 @@
-from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from dataclasses import dataclass
 from domain.states import ApplicationStatus, TERMINAL_APPLICATION_STATUSES
 
 @dataclass
@@ -9,7 +8,6 @@ class ApplicationEntity:
     account_type: str
     status: ApplicationStatus
     version: int
-    responses: Dict[str, Any] = field(default_factory=dict)
 
     def can_transition_to(self, new_status: ApplicationStatus) -> bool:
         """False once the status is terminal; MANUAL_REVIEW is not terminal."""

@@ -33,11 +33,6 @@ CUSTOMER_SUBMITTABLE_STATUSES = frozenset(
 )
 
 
-def is_terminal(status: ApplicationStatus) -> bool:
-    """Whether the application has a final decision."""
-    return status in TERMINAL_APPLICATION_STATUSES
-
-
 def is_customer_submittable(status: ApplicationStatus) -> bool:
     """Whether the applicant may submit or resume a step."""
     return status in CUSTOMER_SUBMITTABLE_STATUSES

@@ -174,6 +174,8 @@ class IntegrationRunner:
 
     # Provider authority checks: the external system's own verdict.
 
+    _ADDRESS_CONFIDENCE = 0.95
+
     async def _run_identity_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         pin = form_data.get("personal_identity_number") or form_data.get("representative_id", "")
         return await self.identity_service.verify(str(pin))
@@ -187,5 +189,5 @@ class IntegrationRunner:
     async def _run_address_lookup(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         return IntegrationResult(
             status_outcome=CheckOutcome.APPROVED,
-            raw_response_json=json.dumps({"address_confidence": 0.92, "status": "FETCHED"}),
+            raw_response_json=json.dumps({"address_confidence": self._ADDRESS_CONFIDENCE, "status": "FETCHED"}),
         )

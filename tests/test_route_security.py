@@ -1,19 +1,46 @@
+"""
+Route security tests at two levels:
+- Unit: call the guard functions directly with a stub repository
+- HTTP: hit the full stack via TestClient to prove the guards wire up end-to-end
+"""
 from typing import Any, Dict, Optional
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from domain.flow_registry import flow_registry
+from main import app
+from web.dependencies import get_application_repository
 from web.views import _assert_step_can_be_rendered, _load_routable_application_context
 
 
-class RouteSecurityRepository:
-    def __init__(self, context: Optional[Dict[str, Any]]):
-        self.context = context
+# ---------------------------------------------------------------------------
+# Shared stub repository
+# ---------------------------------------------------------------------------
+
+class StubRepository:
+    _SENTINEL = object()
+
+    def __init__(
+        self,
+        context: Any = _SENTINEL,
+        *,
+        status: str = "STARTED",
+        country: str = "SWEDEN",
+        account_type: str = "private",
+    ):
+        self.context = context if context is not self._SENTINEL else {
+            "id": "app-1",
+            "country": country,
+            "account_type": account_type,
+            "status": status,
+            "version": 1,
+        }
         self.responses: Dict[tuple[str, str], Dict[str, Any]] = {}
 
     def get_application_context(self, application_id: str) -> Optional[Dict[str, Any]]:
-        return self.context
+        return self.context if application_id == "app-1" else None
 
     def get_application_context_by_resume_token(self, resume_token: str) -> Optional[Dict[str, Any]]:
         if resume_token == "valid-token" and self.context:
@@ -26,86 +53,124 @@ class RouteSecurityRepository:
         return self.responses.get((application_id, step_id))
 
 
-def _context(status: str = "STARTED") -> Dict[str, Any]:
-    return {
-        "id": "app-1",
-        "country": "SWEDEN",
-        "account_type": "private",
-        "status": status,
-        "version": 1,
-    }
+def _http_client(repository: StubRepository) -> TestClient:
+    app.dependency_overrides[get_application_repository] = lambda: repository
+    return TestClient(app)
 
 
-def test_route_guard_rejects_missing_application():
-    repository = RouteSecurityRepository(context=None)
+# ---------------------------------------------------------------------------
+# Unit-level guard tests (_load_routable_application_context)
+# ---------------------------------------------------------------------------
 
-    with pytest.raises(HTTPException) as exc_info:
-        _load_routable_application_context(repository, "app-1", "SWEDEN", "private", "valid-token")
+def test_guard_rejects_missing_application():
+    repo = StubRepository(context=None)
+    with pytest.raises(HTTPException) as exc:
+        _load_routable_application_context(repo, "app-1", "SWEDEN", "private", "valid-token")
+    assert exc.value.status_code == 404
 
-    assert exc_info.value.status_code == 404
 
-
-def test_route_guard_rejects_country_or_type_tampering():
-    repository = RouteSecurityRepository(context=_context())
-
+def test_guard_rejects_country_or_type_tampering():
+    repo = StubRepository()
     with pytest.raises(HTTPException) as country_exc:
-        _load_routable_application_context(repository, "app-1", "SPAIN", "private", "valid-token")
-
+        _load_routable_application_context(repo, "app-1", "SPAIN", "private", "valid-token")
     with pytest.raises(HTTPException) as type_exc:
-        _load_routable_application_context(repository, "app-1", "SWEDEN", "business", "valid-token")
-
+        _load_routable_application_context(repo, "app-1", "SWEDEN", "business", "valid-token")
     assert country_exc.value.status_code == 403
     assert type_exc.value.status_code == 403
 
 
 @pytest.mark.parametrize("status", ["APPROVED", "REJECTED", "MANUAL_REVIEW"])
-def test_route_guard_rejects_terminal_applications(status):
-    repository = RouteSecurityRepository(context=_context(status=status))
-
-    with pytest.raises(HTTPException) as exc_info:
-        _load_routable_application_context(repository, "app-1", "SWEDEN", "private")
-
-    assert exc_info.value.status_code == 409
+def test_guard_rejects_terminal_applications(status: str):
+    repo = StubRepository(status=status)
+    with pytest.raises(HTTPException) as exc:
+        _load_routable_application_context(repo, "app-1", "SWEDEN", "private")
+    assert exc.value.status_code == 409
 
 
-def test_route_guard_allows_active_matching_application():
-    repository = RouteSecurityRepository(context=_context(status="IN_PROGRESS"))
-
-    context = _load_routable_application_context(repository, "app-1", "sweden", "PRIVATE", "valid-token")
-
+def test_guard_allows_active_matching_application():
+    repo = StubRepository(status="IN_PROGRESS")
+    context = _load_routable_application_context(repo, "app-1", "sweden", "PRIVATE", "valid-token")
     assert context["id"] == "app-1"
 
 
-def test_route_guard_rejects_active_application_without_matching_resume_cookie():
-    repository = RouteSecurityRepository(context=_context(status="IN_PROGRESS"))
-
-    with pytest.raises(HTTPException) as missing_cookie_exc:
-        _load_routable_application_context(repository, "app-1", "SWEDEN", "private")
-
-    with pytest.raises(HTTPException) as bad_cookie_exc:
-        _load_routable_application_context(repository, "app-1", "SWEDEN", "private", "wrong-token")
-
-    with pytest.raises(HTTPException) as expired_cookie_exc:
-        _load_routable_application_context(repository, "app-1", "SWEDEN", "private", "expired-token")
-
-    assert missing_cookie_exc.value.status_code == 403
-    assert bad_cookie_exc.value.status_code == 403
-    assert expired_cookie_exc.value.status_code == 403
+def test_guard_rejects_missing_expired_and_wrong_resume_cookie():
+    repo = StubRepository(status="IN_PROGRESS")
+    for token in [None, "wrong-token", "expired-token"]:
+        with pytest.raises(HTTPException) as exc:
+            _load_routable_application_context(repo, "app-1", "SWEDEN", "private", token)
+        assert exc.value.status_code == 403
 
 
-def test_render_guard_rejects_opening_later_step_before_previous_steps():
-    repository = RouteSecurityRepository(context=_context())
+# ---------------------------------------------------------------------------
+# Unit-level render guard tests (_assert_step_can_be_rendered)
+# ---------------------------------------------------------------------------
+
+def test_render_guard_rejects_later_step_without_prior_responses():
+    repo = StubRepository()
     flow = flow_registry.get_flow("SWEDEN", "private")
-
-    with pytest.raises(HTTPException) as exc_info:
-        _assert_step_can_be_rendered(flow, repository, "app-1", "financial_profile")
-
-    assert exc_info.value.status_code == 403
+    with pytest.raises(HTTPException) as exc:
+        _assert_step_can_be_rendered(flow, repo, "app-1", "financial_profile")
+    assert exc.value.status_code == 403
 
 
-def test_render_guard_allows_first_incomplete_step():
-    repository = RouteSecurityRepository(context=_context())
-    repository.responses[("app-1", "collect_identity")] = {"form_data": {}, "payload_hash": "h1"}
+def test_render_guard_allows_next_incomplete_step():
+    repo = StubRepository()
+    repo.responses[("app-1", "collect_identity")] = {"form_data": {}, "payload_hash": "h1"}
     flow = flow_registry.get_flow("SWEDEN", "private")
+    _assert_step_can_be_rendered(flow, repo, "app-1", "confirm_contact")
 
-    _assert_step_can_be_rendered(flow, repository, "app-1", "confirm_contact")
+
+# ---------------------------------------------------------------------------
+# HTTP-level tests (full stack via TestClient)
+# ---------------------------------------------------------------------------
+
+def test_http_rejects_terminal_application_direct_url():
+    client = _http_client(StubRepository(status="APPROVED"))
+    try:
+        response = client.get("/application/app-1/step/collect_identity?country=SWEDEN&type=private")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 409
+
+
+def test_http_rejects_country_tampering_in_query():
+    repo = StubRepository()
+    client = _http_client(repo)
+    client.cookies.set("bank_onboarding_resume", "valid-token")
+    try:
+        response = client.get("/application/app-1/step/collect_identity?country=SPAIN&type=private")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 403
+
+
+def test_http_rejects_later_step_without_prior_responses():
+    client = _http_client(StubRepository())
+    client.cookies.set("bank_onboarding_resume", "valid-token")
+    try:
+        response = client.get("/application/app-1/step/financial_profile?country=SWEDEN&type=private")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 403
+
+
+def test_http_allows_next_step_when_prior_step_complete():
+    repo = StubRepository(status="IN_PROGRESS")
+    repo.responses[("app-1", "collect_identity")] = {"form_data": {}, "payload_hash": "h1"}
+    client = _http_client(repo)
+    client.cookies.set("bank_onboarding_resume", "valid-token")
+    try:
+        response = client.get("/application/app-1/step/confirm_contact?country=SWEDEN&type=private")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert "Contact Details" in response.text
+
+
+def test_http_rejects_active_application_without_resume_cookie():
+    client = _http_client(StubRepository(status="IN_PROGRESS"))
+    try:
+        response = client.get("/application/app-1/step/collect_identity?country=SWEDEN&type=private")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 403

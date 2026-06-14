@@ -80,28 +80,31 @@ def _load_routable_application_context(
 async def index_view(request: Request):
     return templates.TemplateResponse(request, "start.html")
 
+def _handle_resume(request: Request, repository: SQLAlchemyApplicationRepository):
+    """Shared resume logic for both the GET and POST resume endpoints."""
+    error_message = "No resumable application was found on this device."
+    resume_token = request.cookies.get(RESUME_COOKIE_NAME)
+    if not resume_token:
+        return templates.TemplateResponse(request, "resume.html", {"error_message": error_message})
+    try:
+        outcome = ResumeService(repository=repository).resume_by_token(resume_token)
+        url = "/application/{}/step/{}?country={}&type={}".format(
+            outcome["application_id"], outcome["next_step_id"],
+            outcome["country"], outcome["account_type"],
+        )
+        return RedirectResponse(url=url, status_code=303)
+    except ResumeApplicationError:
+        response = templates.TemplateResponse(request, "resume.html", {"error_message": error_message})
+        response.delete_cookie(RESUME_COOKIE_NAME)
+        return response
+
+
 @router.get("/resume", response_class=HTMLResponse)
 async def render_resume_hub(
     request: Request,
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
-    generic_resume_error = "No resumable application was found on this device."
-    resume_token = request.cookies.get(RESUME_COOKIE_NAME)
-    if not resume_token:
-        return templates.TemplateResponse(request, "resume.html", {"error_message": generic_resume_error})
-
-    resumer = ResumeService(repository=repository)
-    try:
-        outcome = resumer.resume_by_token(resume_token)
-        app_id = str(outcome["application_id"])
-        country_str = str(outcome["country"])
-        account_type_str = str(outcome["account_type"])
-        url = f"/application/{app_id}/step/{outcome['next_step_id']}?country={country_str}&type={account_type_str}"
-        return RedirectResponse(url=url, status_code=303)
-    except ResumeApplicationError:
-        response = templates.TemplateResponse(request, "resume.html", {"error_message": generic_resume_error})
-        response.delete_cookie(RESUME_COOKIE_NAME)
-        return response
+    return _handle_resume(request, repository)
 
 @router.post("/application/start", response_class=RedirectResponse)
 async def start_application_view(
@@ -143,23 +146,7 @@ async def handle_resume_submission(
     request: Request,
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
-    generic_resume_error = "No resumable application was found on this device."
-    resume_token = request.cookies.get(RESUME_COOKIE_NAME)
-    if not resume_token:
-        return templates.TemplateResponse(request, "resume.html", {"error_message": generic_resume_error})
-
-    resumer = ResumeService(repository=repository)
-    try:
-        outcome = resumer.resume_by_token(resume_token)
-        app_id = str(outcome["application_id"])
-        country_str = str(outcome["country"])
-        account_type_str = str(outcome["account_type"])
-        url = f"/application/{app_id}/step/{outcome['next_step_id']}?country={country_str}&type={account_type_str}"
-        return RedirectResponse(url=url, status_code=303)
-    except ResumeApplicationError:
-        response = templates.TemplateResponse(request, "resume.html", {"error_message": generic_resume_error})
-        response.delete_cookie(RESUME_COOKIE_NAME)
-        return response
+    return _handle_resume(request, repository)
 
 @router.get("/application/{application_id}/step/{step_id}", response_class=HTMLResponse)
 async def render_step_view(

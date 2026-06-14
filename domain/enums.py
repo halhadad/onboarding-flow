@@ -69,3 +69,6 @@ class AuditField(str, Enum):
     PATH = "path"
     STATUS_CODE = "status_code"
     DURATION_MS = "duration_ms"
+    STEP_ID = "step_id"
+    COUNTRY = "country"
+    ACCOUNT_TYPE = "account_type"

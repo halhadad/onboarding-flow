@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple
 from domain.exceptions import FlowRegistryError
 from domain.flow import FlowConfig
 from flows.sweden_individual import sweden_individual_flow
@@ -25,7 +25,7 @@ class FlowRegistry:
             )
         return self._registry[key]
 
-    def all_flows(self) -> List[FlowConfig]:
+    def all_flows(self) -> list[FlowConfig]:
         return list(self._registry.values())
 
 # Instantiated global lookup registry

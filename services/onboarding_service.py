@@ -13,6 +13,7 @@ from domain.ports import (
     RegistryLookupService,
     BankAccountValidationService,
 )
+from domain.enums import AuditField
 from domain.flow_registry import FlowRegistry, flow_registry as default_flow_registry
 from domain.entities import ApplicationEntity
 from domain.exceptions import StateTransitionError
@@ -100,11 +101,11 @@ class OnboardingService:
         logger.info(
             "step_submission_started",
             extra={
-                "request_id": request_id,
-                "application_id": application_id,
-                "step_id": step_id,
-                "country": country,
-                "account_type": account_type,
+                AuditField.REQUEST_ID.value: request_id,
+                AuditField.APPLICATION_ID.value: application_id,
+                AuditField.STEP_ID.value: step_id,
+                AuditField.COUNTRY.value: country,
+                AuditField.ACCOUNT_TYPE.value: account_type,
             },
         )
 
@@ -184,10 +185,10 @@ class OnboardingService:
         logger.info(
             "step_submission_completed",
             extra={
-                "request_id": request_id,
-                "application_id": application_id,
-                "step_id": step_id,
-                "outcome": final_status.value,
+                AuditField.REQUEST_ID.value: request_id,
+                AuditField.APPLICATION_ID.value: application_id,
+                AuditField.STEP_ID.value: step_id,
+                AuditField.OUTCOME.value: final_status.value,
             },
         )
         return {

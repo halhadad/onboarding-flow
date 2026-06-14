@@ -19,7 +19,6 @@ class ApplicationRecord(Base):
     country: Mapped[str] = mapped_column(String, nullable=False)
     account_type: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default=ApplicationStatus.STARTED.value)
-    current_step_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     resume_token: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, default=generate_uuid)
     resume_token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
