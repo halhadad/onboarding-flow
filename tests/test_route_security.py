@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from domain.flow_registry import flow_registry
 from main import app
 from web.dependencies import get_application_repository
-from web.views import _assert_step_can_be_rendered, _load_routable_application_context
+from web.views import _assert_step_can_be_rendered, _get_application_or_abort
 
 
 
@@ -56,16 +56,16 @@ def _http_client(repository: StubRepository) -> TestClient:
 def test_guard_rejects_missing_application():
     repo = StubRepository(context=None)
     with pytest.raises(HTTPException) as exc:
-        _load_routable_application_context(repo, "app-1", "SWEDEN", "private", "valid-token")
+        _get_application_or_abort(repo, "app-1", "SWEDEN", "private", "valid-token")
     assert exc.value.status_code == 404
 
 
 def test_guard_rejects_country_or_type_tampering():
     repo = StubRepository()
     with pytest.raises(HTTPException) as country_exc:
-        _load_routable_application_context(repo, "app-1", "SPAIN", "private", "valid-token")
+        _get_application_or_abort(repo, "app-1", "SPAIN", "private", "valid-token")
     with pytest.raises(HTTPException) as type_exc:
-        _load_routable_application_context(repo, "app-1", "SWEDEN", "business", "valid-token")
+        _get_application_or_abort(repo, "app-1", "SWEDEN", "business", "valid-token")
     assert country_exc.value.status_code == 403
     assert type_exc.value.status_code == 403
 
@@ -74,13 +74,13 @@ def test_guard_rejects_country_or_type_tampering():
 def test_guard_rejects_terminal_applications(status: str):
     repo = StubRepository(status=status)
     with pytest.raises(HTTPException) as exc:
-        _load_routable_application_context(repo, "app-1", "SWEDEN", "private")
+        _get_application_or_abort(repo, "app-1", "SWEDEN", "private")
     assert exc.value.status_code == 409
 
 
 def test_guard_allows_active_matching_application():
     repo = StubRepository(status="IN_PROGRESS")
-    context = _load_routable_application_context(repo, "app-1", "sweden", "PRIVATE", "valid-token")
+    context = _get_application_or_abort(repo, "app-1", "sweden", "PRIVATE", "valid-token")
     assert context["id"] == "app-1"
 
 
@@ -88,7 +88,7 @@ def test_guard_rejects_missing_expired_and_wrong_resume_cookie():
     repo = StubRepository(status="IN_PROGRESS")
     for token in [None, "wrong-token", "expired-token"]:
         with pytest.raises(HTTPException) as exc:
-            _load_routable_application_context(repo, "app-1", "SWEDEN", "private", token)
+            _get_application_or_abort(repo, "app-1", "SWEDEN", "private", token)
         assert exc.value.status_code == 403
 
 

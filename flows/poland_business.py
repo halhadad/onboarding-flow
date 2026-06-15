@@ -58,6 +58,7 @@ poland_business_flow = FlowConfig(
                 FormFieldConfig(FieldId.CONSENT, requires_true=True),
             ],
             required_integrations=[],
+            is_review_step=True,
         ),
     ],
 )

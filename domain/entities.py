@@ -9,12 +9,7 @@ class ApplicationEntity:
     status: ApplicationStatus
     version: int
 
-    def can_transition_to(self, new_status: ApplicationStatus) -> bool:
-        if self.status in TERMINAL_APPLICATION_STATUSES:
-            return False
-        return True
-
     def transition_status(self, new_status: ApplicationStatus) -> None:
-        if not self.can_transition_to(new_status):
-            raise RuntimeError(f"Cannot transition application from terminal state {self.status} to {new_status}")
+        if self.status in TERMINAL_APPLICATION_STATUSES:
+            raise RuntimeError(f"Cannot transition from terminal state {self.status} to {new_status}")
         self.status = new_status

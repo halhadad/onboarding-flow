@@ -72,7 +72,6 @@ def _spec(key: FieldId, field_type: FieldType, label: str, sensitive: bool = Tru
     return FieldSpec(key=key, field_type=field_type, label=label, sensitive=sensitive, options=options)
 
 
-# Declared once. Anything not explicitly cleared as public stays sensitive.
 FIELD_CATALOG: Dict[FieldId, FieldSpec] = {
     spec.key: spec
     for spec in (

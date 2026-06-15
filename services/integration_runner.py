@@ -85,11 +85,12 @@ class IntegrationRunner:
                     timeout=self.timeout_seconds,
                 )
             except asyncio.TimeoutError:
-                # Transient: retry until attempts are exhausted.
                 logger.warning("integration_timeout", extra={**log_context, "attempt": attempt})
+            except (ValueError, TypeError, AttributeError, KeyError):
+                # Programming error in this handler — surface as 500, not 503.
+                raise
             except Exception as exc:
-                # Inputs are validated upstream, so a non timeout error is a provider
-                # fault. Log metadata only, never the payload or exception text.
+                # Transport / provider fault. Log type only, never the payload.
                 logger.error("integration_call_failed", extra={**log_context, "error_type": type(exc).__name__})
                 raise IntegrationUnavailableError(str(integration_name)) from exc
 
@@ -107,8 +108,6 @@ class IntegrationRunner:
             return float(text)
         except ValueError:
             return 0.0
-
-    # Risk checks: gather facts, the engine decides.
 
     async def _run_credit_bureau_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         assessment = await self.credit_service.evaluate(
@@ -168,20 +167,18 @@ class IntegrationRunner:
         payload = {"authority": "confirmed" if has_authority else "missing_or_unconfirmed"}
         return IntegrationResult(outcome, json.dumps(payload))
 
-    # Provider authority checks: the external system's own verdict.
-
-
     async def _run_identity_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        pin = form_data.get("personal_identity_number") or form_data.get("representative_id", "")
-        return await self.identity_service.verify(str(pin))
+        if "personal_identity_number" in form_data:
+            pin = str(form_data["personal_identity_number"])
+        else:
+            pin = str(form_data.get("representative_id", ""))
+        return await self.identity_service.verify(pin)
 
     async def _run_registry_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         return await self.registry_service.lookup_entity(str(form_data.get("company_identifier", "")))
 
     async def _run_bank_account_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         return await self.bank_account_service.validate_iban(str(form_data.get("iban", "")))
-
-    # Low risk checks, engine may not need to check it (Demo)
 
     _ADDRESS_CONFIDENCE = 0.95
 

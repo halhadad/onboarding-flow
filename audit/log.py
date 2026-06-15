@@ -34,29 +34,28 @@ def configure_logging() -> None:
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 
-logger = logging.getLogger("onboarding.audit")
+_audit_logger = logging.getLogger("onboarding.audit")
 
-class SecurityAuditLogger:
-    @staticmethod
-    def log_state_mutation(application_id: str, element: str, status_outcome: str, request_id: str) -> None:
-        logger.info(
-            "state_mutation",
-            extra={
-                AuditField.APPLICATION_ID.value: application_id,
-                AuditField.COMPONENT.value: element,
-                AuditField.OUTCOME.value: status_outcome,
-                AuditField.REQUEST_ID.value: request_id,
-            },
-        )
 
-    @staticmethod
-    def log_integration_check(application_id: str, service_name: str, status_outcome: str, request_id: str) -> None:
-        logger.info(
-            "integration_check",
-            extra={
-                AuditField.APPLICATION_ID.value: application_id,
-                AuditField.COMPONENT.value: service_name,
-                AuditField.OUTCOME.value: status_outcome,
-                AuditField.REQUEST_ID.value: request_id,
-            },
-        )
+def log_status_change(application_id: str, element: str, status_outcome: str, request_id: str) -> None:
+    _audit_logger.info(
+        "status_change",
+        extra={
+            AuditField.APPLICATION_ID.value: application_id,
+            AuditField.COMPONENT.value: element,
+            AuditField.OUTCOME.value: status_outcome,
+            AuditField.REQUEST_ID.value: request_id,
+        },
+    )
+
+
+def log_integration_check(application_id: str, service_name: str, status_outcome: str, request_id: str) -> None:
+    _audit_logger.info(
+        "integration_check",
+        extra={
+            AuditField.APPLICATION_ID.value: application_id,
+            AuditField.COMPONENT.value: service_name,
+            AuditField.OUTCOME.value: status_outcome,
+            AuditField.REQUEST_ID.value: request_id,
+        },
+    )

@@ -9,6 +9,7 @@ from services.integration_runner import IntegrationUnavailableError
 from repositories.application_repo import ConcurrentModificationError, SQLAlchemyApplicationRepository
 from web.forms import FormValidationError, validate_step_payload
 from domain.flow_registry import FlowRegistryError, flow_registry
+from domain.ports import ApplicationRepository
 from domain.states import ApplicationStatus, is_customer_submittable
 from services.resume_service import ResumeService, ResumeApplicationError
 
@@ -23,32 +24,29 @@ RESUME_COOKIE_MAX_AGE_SECONDS = settings.RESUME_TOKEN_TTL_SECONDS
 
 def _progress_context(flow, step_id: str) -> dict:
     step_ids = [step.step_id for step in flow.steps]
-    current_index = step_ids.index(step_id) if step_id in step_ids else 0
-    total_steps = len(step_ids)
-    current_step_number = current_index + 1
+    n = step_ids.index(step_id) + 1 if step_id in step_ids else 1
+    total = len(step_ids)
     return {
-        "current_step_number": current_step_number,
-        "total_steps": total_steps,
-        "progress_percent": int((current_step_number / total_steps) * 100) if total_steps else 0,
+        "current_step_number": n,
+        "total_steps": total,
+        "progress_percent": int(n / total * 100) if total else 0,
     }
 
 
-def _assert_step_can_be_rendered(flow, repository: SQLAlchemyApplicationRepository, application_id: str, step_id: str) -> None:
+def _assert_step_can_be_rendered(flow, repository: ApplicationRepository, application_id: str, step_id: str) -> None:
     step_ids = [step.step_id for step in flow.steps]
-    requested_index = step_ids.index(step_id)
-    first_incomplete_index = len(step_ids)
-
-    for index, step in enumerate(flow.steps):
-        if not repository.get_step_response(application_id, step.step_id):
-            first_incomplete_index = index
-            break
-
-    if requested_index > first_incomplete_index:
+    if step_id not in step_ids:
+        raise HTTPException(status_code=404, detail="Step not found.")
+    first_incomplete = next(
+        (i for i, s in enumerate(flow.steps) if not repository.get_step_response(application_id, s.step_id)),
+        len(flow.steps),
+    )
+    if step_ids.index(step_id) > first_incomplete:
         raise HTTPException(status_code=403, detail="Please complete the previous steps first.")
 
 
-def _load_routable_application_context(
-    repository: SQLAlchemyApplicationRepository,
+def _get_application_or_abort(
+    repository: ApplicationRepository,
     application_id: str,
     country: str,
     account_type: str,
@@ -63,7 +61,6 @@ def _load_routable_application_context(
     if stored_country != country.upper() or stored_account_type != account_type.lower():
         raise HTTPException(status_code=403, detail="Wrong country or account type for this application.")
 
-    # Same gate as the service layer; MANUAL_REVIEW is parked with a reviewer.
     if not is_customer_submittable(ApplicationStatus(str(app_context["status"]))):
         raise HTTPException(status_code=409, detail="This application is no longer accepting submissions.")
 
@@ -156,7 +153,7 @@ async def render_step_view(
     account_type: str = Query(alias="type"),
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
-    app_context = _load_routable_application_context(
+    app_context = _get_application_or_abort(
         repository,
         application_id,
         country,
@@ -177,7 +174,7 @@ async def render_step_view(
     db_version = int(app_context["version"])
     _assert_step_can_be_rendered(flow, repository, application_id, step_id)
 
-    if step_id == "review_consent":
+    if step_config.is_review_step:
         summary = []
         for prior_step in flow.steps:
             if prior_step.step_id == "review_consent":
@@ -232,9 +229,9 @@ async def submit_step_view(
 ):
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     form_data_raw = await request.form()
-    form_dict = {k: v for k, v in form_data_raw.items()}
+    form_dict = dict(form_data_raw)
     
-    app_context = _load_routable_application_context(
+    app_context = _get_application_or_abort(
         service.repository,
         application_id,
         country,
@@ -253,25 +250,20 @@ async def submit_step_view(
     if not step_config:
         raise HTTPException(status_code=404, detail="Step not found.")
 
-    # The DB version check
     db_version = int(app_context["version"])
+    step_ctx = {
+        "application_id": application_id,
+        "step": step_config,
+        "country": stored_country,
+        "type": stored_account_type,
+        "version": db_version,
+        **_progress_context(flow, step_id),
+    }
 
     try:
         clean_payload = validate_step_payload(step_config, country, form_dict)
-    except FormValidationError as validation_err:
-        return templates.TemplateResponse(
-            request,
-            "step.html",
-            {
-                "application_id": application_id,
-                "step": step_config,
-                "country": stored_country,
-                "type": stored_account_type,
-                "version": db_version,
-                "error_message": str(validation_err),
-                **_progress_context(flow, step_id),
-            }
-        )
+    except FormValidationError as err:
+        return templates.TemplateResponse(request, "step.html", {**step_ctx, "error_message": str(err)})
 
     try:
         result = await service.process_step_submission(
@@ -285,48 +277,16 @@ async def submit_step_view(
         )
     except ConcurrentModificationError:
         return templates.TemplateResponse(
-            request,
-            "step.html",
-            {
-                "application_id": application_id,
-                "step": step_config,
-                "country": stored_country,
-                "type": stored_account_type,
-                "version": db_version,
-                "error_message": "State conflict detected. Refresh this step before submitting again.",
-                **_progress_context(flow, step_id),
-            },
+            request, "step.html",
+            {**step_ctx, "error_message": "State conflict detected. Refresh this step before submitting again."},
             status_code=409,
         )
     except StateTransitionError as err:
-        return templates.TemplateResponse(
-            request,
-            "step.html",
-            {
-                "application_id": application_id,
-                "step": step_config,
-                "country": stored_country,
-                "type": stored_account_type,
-                "version": db_version,
-                "error_message": str(err),
-                **_progress_context(flow, step_id),
-            },
-            status_code=409,
-        )
+        return templates.TemplateResponse(request, "step.html", {**step_ctx, "error_message": str(err)}, status_code=409)
     except IntegrationUnavailableError:
-        
         return templates.TemplateResponse(
-            request,
-            "step.html",
-            {
-                "application_id": application_id,
-                "step": step_config,
-                "country": stored_country,
-                "type": stored_account_type,
-                "version": db_version,
-                "error_message": "A verification service is temporarily unavailable. Please submit again in a moment.",
-                **_progress_context(flow, step_id),
-            },
+            request, "step.html",
+            {**step_ctx, "error_message": "A verification service is temporarily unavailable. Please submit again in a moment."},
             status_code=503,
         )
 

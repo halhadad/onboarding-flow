@@ -4,7 +4,6 @@ from typing import Any, FrozenSet
 
 from domain.fields import sensitive_field_keys
 
-# We can redact fields that are not form fields
 _PROVIDER_SIGNAL_KEYS: FrozenSet[str] = frozenset({
     "disposable_income",
     "matched_country",

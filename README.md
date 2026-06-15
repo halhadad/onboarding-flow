@@ -4,15 +4,24 @@ Sample Python web application/service for customer onboarding across Sweden, Spa
 
 ## Run locally
 
+**macOS / Linux**
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
+**Windows**
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 .\.venv\Scripts\uvicorn main:app --reload
 ```
 
-Or: `.\.venv\Scripts\python run.py`
+Or on either platform: `python run.py` (after activating the venv).
 
-Requires a `.env`:
+Requires a `.env` in the project root:
 
 ```env
 DATABASE_URL=sqlite:///./onboarding.db
@@ -21,7 +30,11 @@ ONBOARDING_INTERNAL_SECRET=replace-this-local-development-secret
 
 ## Tests
 
-```powershell
+```bash
+# macOS / Linux
+python -m pytest -q
+
+# Windows
 .\.venv\Scripts\python -m pytest -q
 ```
 
@@ -71,7 +84,7 @@ Schema is created via `create_all()`. A real deployment would use Alembic.
 
 **Provider routing.** Each flow step currently names an integration directly (`identity`, `credit_bureau`). Production needs a provider capability map (supported countries, customer types, check types) and a per-market policy (e.g. BankID or Freja ID for Sweden). Startup should fail if a flow cannot resolve to an allowed provider. This prevents a Swedish journey accidentally routing to a Spanish provider.
 
-**Security.** The sample has the basics: server-side validation, request IDs, PII out of the audit trail, a single state-gate, transient failure isolation, HTTP-only resume cookie. Missing for production: authentication, authorization, CSRF protection, rate limiting, encrypted fields at rest, hashed resume handles, secrets managed outside the codebase.
+**Security.** The sample has the basics: server-side validation, request IDs, PII out of the audit trail, a single state-gate, transient failure isolation, HTTP-only resume cookie. Missing for production: authentication, authorization, rate limiting, encrypted fields at rest, hashed resume handles, secrets managed outside the codebase.
 
 **Audit.** Current integration logs are useful for traceability but are not an immutable audit record. Production should separate operational logs from append-only audit events (actor, event type, correlation ID, previous/new state, rule version, timestamp) written to a store that does not allow deletion.
 
@@ -86,7 +99,20 @@ Schema is created via `create_all()`. A real deployment would use Alembic.
 - `MANUAL_REVIEW` is terminal for the customer; there is no operator path to resolve it.
 - Checks in later steps are not reached once an adverse outcome is found in an earlier step.
 - Country business rules are representative mocks; all markets share the same decisioning thresholds.
-- No migrations, no auth, no rate limiting, no CSRF protection.
+- No migrations, no auth, no rate limiting.
+
+## Resumable flow
+
+Applications can be resumed across devices using a time-limited token stored in a signed HTTP-only cookie.
+
+**To demo:**
+1. Start any onboarding flow and complete one or two steps.
+2. Copy the URL — note the `application_id` in the path.
+3. Close the tab (or clear cookies to simulate a different device, then go to `/resume`).
+4. The app reads the resume token from the cookie, finds the first incomplete step, and redirects directly to it.
+5. Tokens expire after 7 days (`RESUME_TOKEN_TTL_SECONDS`). An expired or unknown token renders an error on `/resume` and clears the cookie.
+
+The token is a 32-byte URL-safe random value (`secrets.token_urlsafe`). It is stored in the `applications` table alongside its expiry and is never reused. The cookie is `HttpOnly` and `SameSite=Lax`.
 
 ## Demo inputs
 

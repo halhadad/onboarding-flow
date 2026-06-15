@@ -15,14 +15,11 @@ class ResumeService:
             raise ResumeApplicationError("Resume token was not found.")
         if context.get("resume_token_expired"):
             raise ResumeApplicationError("Resume token has expired.")
-        return self.resume_session(
-            str(context["id"]),
-            str(context["country"]),
-            str(context["account_type"]),
-        )
 
-    def resume_session(self, application_id: str, country: str, account_type: str) -> Dict[str, Any]:
-        """Find the first incomplete step for an open application."""
+        application_id = str(context["id"])
+        country = str(context["country"])
+        account_type = str(context["account_type"])
+
         current_status_str = self.repository.get_application_status(application_id)
         if not current_status_str:
             raise ResumeApplicationError(f"No active session found matching ID: {application_id}")

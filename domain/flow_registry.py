@@ -28,10 +28,7 @@ class FlowRegistry:
     def all_flows(self) -> list[FlowConfig]:
         return list(self._registry.values())
 
-# Instantiated global lookup registry
 flow_registry = FlowRegistry()
-
-# Statically register the supported onboarding journeys.
 flow_registry.register(sweden_individual_flow)
 flow_registry.register(sweden_business_flow)
 flow_registry.register(spain_individual_flow)

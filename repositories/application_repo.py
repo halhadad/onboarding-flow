@@ -1,4 +1,5 @@
 import json
+import math
 import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -6,7 +7,7 @@ from typing import Dict, Any, Iterator, Optional
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from audit.log import SecurityAuditLogger
+from audit.log import log_status_change, log_integration_check
 from config import settings
 from services.redaction import redact_integration_payload
 from shared.util import now_utc
@@ -32,9 +33,6 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
         except Exception:
             self.session.rollback()
             raise
-
-    def _resume_token_expiry(self) -> datetime:
-        return now_utc() + timedelta(seconds=settings.RESUME_TOKEN_TTL_SECONDS)
 
     def _is_expired(self, expires_at: Optional[datetime]) -> bool:
         if expires_at is None:
@@ -64,7 +62,7 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             status=ApplicationStatus.STARTED.value,
             version=1,
             resume_token=token,
-            resume_token_expires_at=self._resume_token_expiry(),
+            resume_token_expires_at=now_utc() + timedelta(seconds=settings.RESUME_TOKEN_TTL_SECONDS),
             request_id=request_id,
         ))
         try:
@@ -83,7 +81,9 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
 
     def get_application_context_by_resume_token(self, resume_token: str) -> Optional[Dict[str, Any]]:
         token = resume_token.strip()
-        if len(token) < 32 or len(token) > 128:
+        # token_urlsafe(n) produces ceil(n * 4 / 3) base64url chars (no padding).
+        expected_length = math.ceil(settings.RESUME_TOKEN_BYTES * 4 / 3)
+        if len(token) != expected_length:
             return None
         record = self.session.execute(
             select(ApplicationRecord).where(ApplicationRecord.resume_token == token)
@@ -172,4 +172,4 @@ class SQLAlchemyApplicationRepository(ApplicationRepository):
             raw_response_json=redact_integration_payload(response_json),
             request_id=request_id,
         ))
-        SecurityAuditLogger.log_integration_check(application_id, service_name, outcome_value, request_id)
+        log_integration_check(application_id, service_name, outcome_value, request_id)

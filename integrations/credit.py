@@ -1,3 +1,4 @@
+from config import settings
 from domain.ports import CreditBureauService
 from domain.decisioning import CreditAssessment
 from domain.enums import DebtFlag
@@ -11,7 +12,7 @@ class MockCreditBureauService(CreditBureauService):
 
         if disposable_income <= 0:
             score, flags = 310, (DebtFlag.NEGATIVE_SURPLUS.value,)
-        elif debt_to_income_ratio > 0.60:
+        elif debt_to_income_ratio > settings.DTI_THRESHOLD:
             score, flags = 480, (DebtFlag.HIGH_LEVERAGE_RISK.value,)
         else:
             score, flags = 780, ()

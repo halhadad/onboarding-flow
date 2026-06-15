@@ -27,7 +27,6 @@ def get_application_repository(session: Session = Depends(get_db_session)) -> SQ
 def get_onboarding_service(
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ) -> OnboardingService:
-    # Composition root; wire and inject dependencies here.
     return OnboardingService(
         repository=repository,
         identity_service=MockIdentityVerificationService(),

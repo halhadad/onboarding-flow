@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from audit.log import SecurityAuditLogger
+from audit.log import log_status_change
 from domain.decisioning import AutomatedDecisionEngine
 from domain.ports import (
     ApplicationRepository,
@@ -105,7 +105,6 @@ class OnboardingService:
             },
         )
 
-        # Reconstruct the application model state cleanly from historical records
         current_status_str = self.repository.get_application_status(application_id)
         if current_status_str is None:
             raise ValueError(f"Application {application_id} not found.")
@@ -117,7 +116,6 @@ class OnboardingService:
             version=current_version
         )
 
-        # Gate shared with the web layer; covers terminal and MANUAL_REVIEW states.
         if not is_customer_submittable(application.status):
             raise StateTransitionError(
                 f"This application can no longer be modified (status: {application.status.value})."
@@ -132,13 +130,11 @@ class OnboardingService:
             next_step_id = flow.get_next_step_id(step_id)
             return {"status": application.status.value, "next_step_id": next_step_id, "reasons": []}
 
-        # Run all checks required
         results = []
         for integration in step_config.required_integrations:
             result = await self.integration_runner.run(integration, application_id, form_data, request_id)
             results.append((integration, result))
 
-        # Collect reasons and decide the resulting status.
         reasons = [
             f"{getattr(integration, 'value', integration)}:{result.status_outcome.value}"
             for integration, result in results
@@ -161,7 +157,6 @@ class OnboardingService:
         decision_reasons = reasons if (rejected or needs_review) else []
         application.transition_status(final_status)
 
-        # DB
         with self.repository.atomic():
             self.repository.save_step_response(application_id, step_id, form_data, current_hash)
             for integration, result in results:
@@ -172,7 +167,7 @@ class OnboardingService:
             if is_final:
                 self.repository.save_decision(application.id, final_status.value, decision_reasons)
 
-        SecurityAuditLogger.log_state_mutation(
+        log_status_change(
             application.id, "application_status", final_status.value, request_id
         )
         logger.info(

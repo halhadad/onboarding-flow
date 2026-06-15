@@ -10,9 +10,6 @@ class IntegrationResult:
     status_outcome: CheckOutcome
     raw_response_json: str
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "status_outcome", CheckOutcome(self.status_outcome))
-
 class ApplicationRepository(ABC):
 
     @abstractmethod

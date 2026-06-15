@@ -28,10 +28,6 @@ class FormFieldConfig:
         return tuple(self.options_override) if self.options_override is not None else self.spec.options
 
     @property
-    def is_sensitive(self) -> bool:
-        return self.spec.sensitive
-
-    @property
     def display_label(self) -> str:
         return self.spec.label
 
@@ -42,6 +38,7 @@ class FlowStep:
     description: str
     fields: Sequence[FormFieldConfig]
     required_integrations: Sequence[str] = field(default_factory=tuple)
+    is_review_step: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "fields", tuple(self.fields))

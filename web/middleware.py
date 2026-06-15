@@ -30,7 +30,6 @@ class BankingSecurityAuditMiddleware(BaseHTTPMiddleware):
             )
             raise
         
-        # Attach the audit ID to the response headers for observability
         response.headers["X-Request-ID"] = request.state.request_id
         duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
         logger.info(
