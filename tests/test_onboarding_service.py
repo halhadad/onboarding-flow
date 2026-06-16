@@ -217,6 +217,99 @@ async def test_service_short_circuits_idempotent_repeat_submission():
     assert repository.integration_logs == []
 
 
+async def test_sweden_business_full_happy_path_reaches_approved():
+    repository = InMemoryRepository()
+    service = _service(repository)
+
+    await service.process_step_submission(
+        application_id="app-1",
+        country="SWEDEN",
+        account_type="business",
+        step_id="business_identity",
+        form_data={
+            "company_identifier": "5560360793",
+            "legal_name": "Acme AB",
+            "legal_form": "AB",
+        },
+        current_version=1,
+        request_id="req-1",
+    )
+    await service.process_step_submission(
+        application_id="app-1",
+        country="SWEDEN",
+        account_type="business",
+        step_id="representative",
+        form_data={
+            "representative_name": "Jane Doe",
+            "representative_id": "199001011234",
+            "has_signatory_authority": True,
+        },
+        current_version=1,
+        request_id="req-1",
+    )
+    await service.process_step_submission(
+        application_id="app-1",
+        country="SWEDEN",
+        account_type="business",
+        step_id="beneficial_owners",
+        form_data={"ubo_count": 2, "largest_ownership_percent": 40.0},
+        current_version=1,
+        request_id="req-1",
+    )
+    result = await service.process_step_submission(
+        application_id="app-1",
+        country="SWEDEN",
+        account_type="business",
+        step_id="business_profile",
+        form_data={
+            "sector": "RETAIL",
+            "annual_turnover": 100000.0,
+            "expected_monthly_volume": 2000.0,
+        },
+        current_version=1,
+        request_id="req-1",
+    )
+
+    assert result == {"status": "IN_PROGRESS", "next_step_id": "review_consent", "reasons": []}
+
+    final_result = await service.process_step_submission(
+        application_id="app-1",
+        country="SWEDEN",
+        account_type="business",
+        step_id="review_consent",
+        form_data={"consent": True},
+        current_version=1,
+        request_id="req-1",
+    )
+
+    assert final_result == {"status": "APPROVED", "next_step_id": None, "reasons": []}
+    assert repository.decisions["app-1"] == ("APPROVED", [])
+
+
+async def test_poland_business_registry_rejection_short_circuits_remaining_steps():
+    repository = InMemoryRepository()
+    service = _service(repository)
+
+    result = await service.process_step_submission(
+        application_id="app-1",
+        country="POLAND",
+        account_type="business",
+        step_id="business_identity",
+        form_data={
+            "company_identifier": "0099887766",
+            "legal_name": "Acme Sp. z o.o.",
+            "legal_form": "Sp. z o.o.",
+        },
+        current_version=1,
+        request_id="req-1",
+    )
+
+    assert result == {"status": "REJECTED", "next_step_id": None, "reasons": ["registry:REJECTED"]}
+    assert ("registry", "REJECTED") in repository.integration_logs
+    assert repository.decisions["app-1"] == ("REJECTED", ["registry:REJECTED"])
+    assert ("app-1", "representative") not in repository.responses
+
+
 async def test_service_rejects_terminal_application_mutation():
     repository = InMemoryRepository()
     repository.status["app-1"] = "APPROVED"

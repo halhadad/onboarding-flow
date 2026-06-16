@@ -80,6 +80,12 @@ Schema is created via `create_all()`. A real deployment would use Alembic.
 - Business credit: zero turnover rejects, high-risk sector or volume above turnover goes to manual review.
 - Bank account: IBAN ending `9999` is a name mismatch (manual review); ending `0000` simulates an unreachable provider (times out, retried, then 503).
 
+## Decisions and tradeoffs
+
+- **Step responses are stored as entered, not redacted.** The bank reads them back for support and compliance, so the right control is encryption at rest in production, not masking. Only the audit trail (`integration_logs`) is redacted, key-based, since copies of that data leak into logs/tickets/monitoring more easily than the primary table.
+- **Provider authority checks return their own verdict; risk checks go through the engine.**
+
+
 ## Production gaps
 
 **Provider routing.** Each flow step currently names an integration directly (`identity`, `credit_bureau`). Production needs a provider capability map (supported countries, customer types, check types) and a per-market policy (e.g. BankID or Freja ID for Sweden). Startup should fail if a flow cannot resolve to an allowed provider. This prevents a Swedish journey accidentally routing to a Spanish provider.
@@ -92,7 +98,7 @@ Schema is created via `create_all()`. A real deployment would use Alembic.
 
 **Integration retries.** Current retry is fixed-interval with no backoff or circuit breaker. Production would use exponential backoff with jitter and a circuit breaker to avoid hammering a struggling provider.
 
-**Deployment.** The app is a standard ASGI container — run it on any container platform (e.g. ECS). SQLite becomes PostgreSQL. Secrets come from a secrets manager rather than a `.env` file. Structured logs go to a log aggregator. Slow or unreliable provider calls move to a background queue so user-facing requests are not blocked by provider latency.
+**Deployment.** The app is a standard ASGI container - run it on any container platform (e.g. ECS). SQLite becomes PostgreSQL. Secrets come from a secrets manager rather than a `.env` file. Structured logs go to a log aggregator. Slow or unreliable provider calls move to a background queue so user-facing requests are not blocked by provider latency.
 
 ## Known limitations
 
@@ -107,7 +113,7 @@ Applications can be resumed across devices using a time-limited token stored in 
 
 **To demo:**
 1. Start any onboarding flow and complete one or two steps.
-2. Copy the URL — note the `application_id` in the path.
+2. Copy the URL - note the `application_id` in the path.
 3. Close the tab (or clear cookies to simulate a different device, then go to `/resume`).
 4. The app reads the resume token from the cookie, finds the first incomplete step, and redirects directly to it.
 5. Tokens expire after 7 days (`RESUME_TOKEN_TTL_SECONDS`). An expired or unknown token renders an error on `/resume` and clears the cookie.
@@ -126,3 +132,16 @@ The token is a 32-byte URL-safe random value (`secrets.token_urlsafe`). It is st
 | Approved financials | income `5000`, expenses `2000`, debts `500` |
 | Manual review financials | income `5000`, expenses `1000`, debts `4000` |
 | Rejected financials | income `1000`, expenses `1500`, debts `0` |
+| Business company identifier, Sweden/Poland (approved) | `5560360793` |
+| Business company identifier, Sweden/Poland (manual review) | ends in `1111`, e.g. `5560361111` |
+| Business company identifier, Sweden/Poland (rejected) | starts with `00`, e.g. `0099887766` |
+| Business company identifier, Spain (approved) | `B12345678` |
+| Business company identifier, Spain (manual review) | ends in `1111`, e.g. `B99991111` |
+| Business company identifier, Spain (rejected) | not reachable — Spain's NIF format requires a leading letter, so a valid identifier can never start with `00` |
+| IBAN, Spain/Poland (approved) | `ES9121000418450200051332` |
+| IBAN, Spain/Poland (manual review, name mismatch) | ends in `9999`, e.g. `ES9121000418450200059999` |
+| IBAN, Spain/Poland (provider timeout, then 503) | ends in `0000`, e.g. `ES9121000418450200050000` |
+| Approved business financials | turnover `100000`, monthly volume `2000`, sector `RETAIL` |
+| Manual review business financials | monthly volume above turnover, or sector `FINANCIAL_SERVICES` |
+| Rejected business financials | turnover `0` |
+

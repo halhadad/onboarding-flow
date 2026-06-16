@@ -9,6 +9,7 @@ from domain.decisioning import (
     OwnershipProfile,
 )
 from domain.enums import IntegrationName
+from domain.fields import FieldId
 from domain.ports import (
     BankAccountValidationService,
     CreditBureauService,
@@ -87,7 +88,6 @@ class IntegrationRunner:
             except asyncio.TimeoutError:
                 logger.warning("integration_timeout", extra={**log_context, "attempt": attempt})
             except (ValueError, TypeError, AttributeError, KeyError):
-                # Programming error in this handler — surface as 500, not 503.
                 raise
             except Exception as exc:
                 # Transport / provider fault. Log type only, never the payload.
@@ -111,9 +111,9 @@ class IntegrationRunner:
 
     async def _run_credit_bureau_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         assessment = await self.credit_service.evaluate(
-            self._to_number(form_data.get("monthly_income")),
-            self._to_number(form_data.get("monthly_expenses")),
-            self._to_number(form_data.get("outstanding_debts")),
+            self._to_number(form_data.get(FieldId.MONTHLY_INCOME.value)),
+            self._to_number(form_data.get(FieldId.MONTHLY_EXPENSES.value)),
+            self._to_number(form_data.get(FieldId.OUTSTANDING_DEBTS.value)),
         )
         outcome = self.decision_engine.assess_affordability(assessment)
         payload = {
@@ -126,8 +126,8 @@ class IntegrationRunner:
 
     async def _run_sanctions_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         screening = await self.sanctions_service.check(
-            str(form_data.get("tax_residency", "")),
-            bool(form_data.get("is_pep")),
+            str(form_data.get(FieldId.TAX_RESIDENCY.value, "")),
+            bool(form_data.get(FieldId.IS_PEP.value)),
         )
         outcome = self.decision_engine.assess_sanctions(screening)
         payload = {
@@ -139,8 +139,8 @@ class IntegrationRunner:
 
     async def _run_ubo_kyc_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         profile = OwnershipProfile(
-            ubo_count=int(self._to_number(form_data.get("ubo_count"))),
-            largest_ownership_percent=self._to_number(form_data.get("largest_ownership_percent")),
+            ubo_count=int(self._to_number(form_data.get(FieldId.UBO_COUNT.value))),
+            largest_ownership_percent=self._to_number(form_data.get(FieldId.LARGEST_OWNERSHIP_PERCENT.value)),
         )
         outcome = self.decision_engine.assess_ownership(profile)
         payload = {"ubo_count": profile.ubo_count, "largest_ownership_percent": profile.largest_ownership_percent}
@@ -148,9 +148,9 @@ class IntegrationRunner:
 
     async def _run_business_credit_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         profile = BusinessProfile(
-            annual_turnover=self._to_number(form_data.get("annual_turnover")),
-            expected_monthly_volume=self._to_number(form_data.get("expected_monthly_volume")),
-            sector=str(form_data.get("sector", "")),
+            annual_turnover=self._to_number(form_data.get(FieldId.ANNUAL_TURNOVER.value)),
+            expected_monthly_volume=self._to_number(form_data.get(FieldId.EXPECTED_MONTHLY_VOLUME.value)),
+            sector=str(form_data.get(FieldId.SECTOR.value, "")),
         )
         outcome = self.decision_engine.assess_business_credit(profile)
         # Log raw figures; downstream reporting buckets them, not this service.
@@ -162,23 +162,23 @@ class IntegrationRunner:
         return IntegrationResult(outcome, json.dumps(payload, sort_keys=True))
 
     async def _run_representative_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        has_authority = bool(form_data.get("has_signatory_authority"))
+        has_authority = bool(form_data.get(FieldId.HAS_SIGNATORY_AUTHORITY.value))
         outcome = self.decision_engine.assess_representative_authority(has_authority)
         payload = {"authority": "confirmed" if has_authority else "missing_or_unconfirmed"}
         return IntegrationResult(outcome, json.dumps(payload))
 
     async def _run_identity_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        if "personal_identity_number" in form_data:
-            pin = str(form_data["personal_identity_number"])
+        if FieldId.PERSONAL_IDENTITY_NUMBER.value in form_data:
+            pin = str(form_data[FieldId.PERSONAL_IDENTITY_NUMBER.value])
         else:
-            pin = str(form_data.get("representative_id", ""))
+            pin = str(form_data.get(FieldId.REPRESENTATIVE_ID.value, ""))
         return await self.identity_service.verify(pin)
 
     async def _run_registry_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        return await self.registry_service.lookup_entity(str(form_data.get("company_identifier", "")))
+        return await self.registry_service.lookup_entity(str(form_data.get(FieldId.COMPANY_IDENTIFIER.value, "")))
 
     async def _run_bank_account_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
-        return await self.bank_account_service.validate_iban(str(form_data.get("iban", "")))
+        return await self.bank_account_service.validate_iban(str(form_data.get(FieldId.IBAN.value, "")))
 
     _ADDRESS_CONFIDENCE = 0.95
 
