@@ -25,9 +25,6 @@ class FlowRegistry:
             )
         return self._registry[key]
 
-    def all_flows(self) -> list[FlowConfig]:
-        return list(self._registry.values())
-
 flow_registry = FlowRegistry()
 flow_registry.register(sweden_individual_flow)
 flow_registry.register(sweden_business_flow)

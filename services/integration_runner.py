@@ -67,6 +67,7 @@ class IntegrationRunner:
         }
 
     async def run(self, integration_name: str, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
+        # look up which provider handler covers this integration name
         handler = self._handlers.get(IntegrationName(integration_name))
         if handler is None:
             raise ValueError(f"No integration handler registered for '{integration_name}'.")
@@ -79,6 +80,7 @@ class IntegrationRunner:
             "application_id": application_id,
             "integration": str(integration_name),
         }
+        # retry loop, each attempt capped by a timeout
         for attempt in range(1, self.max_attempts + 1):
             try:
                 return await asyncio.wait_for(
@@ -90,10 +92,11 @@ class IntegrationRunner:
             except (ValueError, TypeError, AttributeError, KeyError):
                 raise
             except Exception as exc:
-                # Transport / provider fault. Log type only, never the payload.
+                # provider fault, goes in the log
                 logger.error("integration_call_failed", extra={**log_context, "error_type": type(exc).__name__})
                 raise IntegrationUnavailableError(str(integration_name)) from exc
 
+        # ran out of retries
         logger.error("integration_unavailable", extra={**log_context, "attempts": self.max_attempts})
         raise IntegrationUnavailableError(str(integration_name))
 
@@ -109,6 +112,7 @@ class IntegrationRunner:
         except ValueError:
             return 0.0
 
+    # provider gives facts, engine decides the outcome
     async def _run_credit_bureau_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         assessment = await self.credit_service.evaluate(
             self._to_number(form_data.get(FieldId.MONTHLY_INCOME.value)),
@@ -167,6 +171,7 @@ class IntegrationRunner:
         payload = {"authority": "confirmed" if has_authority else "missing_or_unconfirmed"}
         return IntegrationResult(outcome, json.dumps(payload))
 
+    # provider's own verdict is the outcome, no engine involved
     async def _run_identity_check(self, application_id: str, form_data: Dict[str, Any], request_id: str) -> IntegrationResult:
         if FieldId.PERSONAL_IDENTITY_NUMBER.value in form_data:
             pin = str(form_data[FieldId.PERSONAL_IDENTITY_NUMBER.value])

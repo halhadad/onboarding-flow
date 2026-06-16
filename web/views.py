@@ -18,6 +18,7 @@ from config import settings
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 templates.env.autoescape = True
+
 RESUME_COOKIE_NAME = settings.RESUME_COOKIE_NAME
 RESUME_COOKIE_MAX_AGE_SECONDS = settings.RESUME_TOKEN_TTL_SECONDS
 
@@ -37,10 +38,12 @@ def _assert_step_can_be_rendered(flow, repository: ApplicationRepository, applic
     step_ids = [step.step_id for step in flow.steps]
     if step_id not in step_ids:
         raise HTTPException(status_code=404, detail="Step not found.")
+    # find the first step that has no saved response yet
     first_incomplete = next(
         (i for i, s in enumerate(flow.steps) if not repository.get_step_response(application_id, s.step_id)),
         len(flow.steps),
     )
+    # block jumping ahead of unfinished steps
     if step_ids.index(step_id) > first_incomplete:
         raise HTTPException(status_code=403, detail="Please complete the previous steps first.")
 
@@ -52,21 +55,25 @@ def _get_application_or_abort(
     account_type: str,
     resume_token: str | None = None,
 ) -> dict:
+    # load the application
     app_context = repository.get_application_context(application_id)
     if not app_context:
         raise HTTPException(status_code=404, detail="Application not found.")
 
+    # check url country/type match what's stored
     stored_country = str(app_context["country"]).upper()
     stored_account_type = str(app_context["account_type"]).lower()
     if stored_country != country.upper() or stored_account_type != account_type.lower():
         raise HTTPException(status_code=403, detail="Wrong country or account type for this application.")
 
+    # check application status allows more submissions
     if not is_customer_submittable(ApplicationStatus(str(app_context["status"]))):
         raise HTTPException(status_code=409, detail="This application is no longer accepting submissions.")
 
     if not resume_token:
         raise HTTPException(status_code=403, detail="No active session found on this device.")
 
+    # check resume token matches this application and hasn't expired
     token_context = repository.get_application_context_by_resume_token(resume_token)
     if not token_context or str(token_context["id"]) != application_id or token_context.get("resume_token_expired"):
         raise HTTPException(status_code=403, detail="Session expired or not found. Please resume from your original device.")
@@ -77,12 +84,17 @@ def _get_application_or_abort(
 async def index_view(request: Request):
     return templates.TemplateResponse(request, "start.html")
 
-def _handle_resume(request: Request, repository: SQLAlchemyApplicationRepository):
+@router.get("/resume", response_class=HTMLResponse)
+async def render_resume_hub(
+    request: Request,
+    repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
+):
     error_message = "No resumable application was found on this device."
     resume_token = request.cookies.get(RESUME_COOKIE_NAME)
     if not resume_token:
         return templates.TemplateResponse(request, "resume.html", {"error_message": error_message})
     try:
+        # look up the application by token and find where the customer left off
         outcome = ResumeService(repository=repository).resume_by_token(resume_token)
         url = "/application/{}/step/{}?country={}&type={}".format(
             outcome["application_id"], outcome["next_step_id"],
@@ -93,14 +105,6 @@ def _handle_resume(request: Request, repository: SQLAlchemyApplicationRepository
         response = templates.TemplateResponse(request, "resume.html", {"error_message": error_message})
         response.delete_cookie(RESUME_COOKIE_NAME)
         return response
-
-
-@router.get("/resume", response_class=HTMLResponse)
-async def render_resume_hub(
-    request: Request,
-    repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
-):
-    return _handle_resume(request, repository)
 
 @router.post("/application/start", response_class=RedirectResponse)
 async def start_application_view(
@@ -121,8 +125,7 @@ async def start_application_view(
             status_code=400,
         )
 
-    # Created in one transaction; the token is returned, so the cookie never
-    # depends on a read-back of an uncommitted row.
+    # create the application record and get back a resume token to set as a cookie
     application_id, resume_token = service.start_application(country, account_type, request_id)
 
     first_step_id = flow.steps[0].step_id
@@ -137,13 +140,6 @@ async def start_application_view(
     )
     return response
 
-@router.post("/application/resume", response_class=RedirectResponse)
-async def handle_resume_submission(
-    request: Request,
-    repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
-):
-    return _handle_resume(request, repository)
-
 @router.get("/application/{application_id}/step/{step_id}", response_class=HTMLResponse)
 async def render_step_view(
     request: Request,
@@ -153,6 +149,7 @@ async def render_step_view(
     account_type: str = Query(alias="type"),
     repository: SQLAlchemyApplicationRepository = Depends(get_application_repository)
 ):
+    # validate request
     app_context = _get_application_or_abort(
         repository,
         application_id,
@@ -174,11 +171,13 @@ async def render_step_view(
     db_version = int(app_context["version"])
     _assert_step_can_be_rendered(flow, repository, application_id, step_id)
 
+    # review step shows a summary of every previous step's answers instead of a form
     if step_config.is_review_step:
         summary = []
         for prior_step in flow.steps:
-            if prior_step.step_id == "review_consent":
-                break
+            if prior_step.is_review_step:
+                break  # don't summarize the review step itself
+            # pull the saved answers for that step and turn them into label/value rows
             response = repository.get_step_response(application_id, prior_step.step_id)
             if response:
                 form_data = response["form_data"]
@@ -230,7 +229,8 @@ async def submit_step_view(
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     form_data_raw = await request.form()
     form_dict = dict(form_data_raw)
-    
+
+    # validate request
     app_context = _get_application_or_abort(
         service.repository,
         application_id,
@@ -260,11 +260,17 @@ async def submit_step_view(
         **_progress_context(flow, step_id),
     }
 
+    # validate the submitted form fields
     try:
         clean_payload = validate_step_payload(step_config, country, form_dict)
     except FormValidationError as err:
-        return templates.TemplateResponse(request, "step.html", {**step_ctx, "error_message": str(err)})
+        return templates.TemplateResponse(
+            request, "step.html",
+            {**step_ctx, "error_message": str(err)},
+            status_code=400,
+        )
 
+    # run integration checks and save the step
     try:
         result = await service.process_step_submission(
             application_id=application_id,

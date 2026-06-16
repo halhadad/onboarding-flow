@@ -113,6 +113,7 @@ def validate_step_payload(step: FlowStep, country: str, form_data: Dict[str, Any
     for field in step.fields:
         raw_value = form_data.get(field.field_name)
 
+        # checkbox fields
         if field.field_type == FieldType.BOOLEAN.value:
             boolean_value = _clean_text(raw_value).lower() in {"true", "on", "yes", "1"}
             if field.requires_true and not boolean_value:
@@ -124,6 +125,7 @@ def validate_step_payload(step: FlowStep, country: str, form_data: Dict[str, Any
         if field.is_required and not text_value:
             raise FormValidationError(f"{field.display_label} is required.")
 
+        # dispatch by field type to the right validator
         if field.field_type == FieldType.NUMBER.value:
             clean[field.field_name] = _validate_number(field, raw_value)
         elif field.field_type == FieldType.SELECT.value:

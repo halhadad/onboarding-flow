@@ -7,7 +7,7 @@ from typing import Dict, Any, Iterator, Optional
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from audit.log import log_status_change, log_integration_check
+from audit.log import log_integration_check
 from config import settings
 from services.redaction import redact_integration_payload
 from shared.util import now_utc

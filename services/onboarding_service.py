@@ -66,6 +66,7 @@ class OnboardingService:
         return hashlib.sha256(normalised.encode()).hexdigest()
 
     def _assert_step_is_reachable(self, application_id: str, flow, step_id: str) -> None:
+        # find this step's position in the flow
         requested_index = next(
             (index for index, step in enumerate(flow.steps) if step.step_id == step_id),
             None,
@@ -73,6 +74,7 @@ class OnboardingService:
         if requested_index is None:
             raise StateTransitionError("This step is not part of the current flow.")
 
+        # every earlier step must already have a saved response
         for previous_step in flow.steps[:requested_index]:
             if not self.repository.get_step_response(application_id, previous_step.step_id):
                 raise StateTransitionError(
@@ -105,6 +107,7 @@ class OnboardingService:
             },
         )
 
+        # load application and check it can still be submitted to
         current_status_str = self.repository.get_application_status(application_id)
         if current_status_str is None:
             raise ValueError(f"Application {application_id} not found.")
@@ -123,6 +126,7 @@ class OnboardingService:
 
         self._assert_step_is_reachable(application_id, flow, step_id)
 
+        # same payload as last time means skip re-running the integrations
         existing_response = self.repository.get_step_response(application_id, step_id)
         current_hash = self._payload_fingerprint(form_data)
 
@@ -130,11 +134,13 @@ class OnboardingService:
             next_step_id = flow.get_next_step_id(step_id)
             return {"status": application.status.value, "next_step_id": next_step_id, "reasons": []}
 
+        # run every integration this step requires
         results = []
         for integration in step_config.required_integrations:
             result = await self.integration_runner.run(integration, application_id, form_data, request_id)
             results.append((integration, result))
 
+        # collect every adverse result, not just the first one
         reasons = [
             f"{getattr(integration, 'value', integration)}:{result.status_outcome.value}"
             for integration, result in results
@@ -144,6 +150,7 @@ class OnboardingService:
         needs_review = any(r.status_outcome == CheckOutcome.MANUAL_REVIEW for _, r in results)
         next_step_id = flow.get_next_step_id(step_id)
 
+        # work out the worst outcome and whether this ends the flow
         if rejected:
             final_status = ApplicationStatus.REJECTED
         elif needs_review:

@@ -15,7 +15,8 @@ class MockIdentityVerificationService(IdentityVerificationService):
 
     async def verify(self, personal_identity_number: str) -> IntegrationResult:
         clean_pin = personal_identity_number.strip()
-        
+
+        # mock rule, last digits decide the outcome
         if clean_pin.endswith("0000"):
             status = IdentityStatus.EXPIRED_ID
         elif clean_pin.endswith("1111"):
